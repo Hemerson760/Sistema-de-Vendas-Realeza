@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sistema Realeza — Vendas do Ministério</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,500;1,600&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+
+<!-- Firebase (gratuito) -->
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+
+<style>
+:root{
+  --gold: #A9822F;
+  --gold-soft: #C9A961;
+  --gold-pale: #E4D6AE;
+  --ink: #362B1F;
+  --ink-soft: #8B7B62;
+  --ok: #5C7A4B;
+  --warn: #A5493A;
+  --card: #FFFFFF;
+  --line: #E5D9BC;
+  --shadow: 0 10px 30px rgba(120,95,50,0.09);
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:
+    radial-gradient(ellipse 900px 500px at 15% -5%, #FFF8EA 0%, transparent 60%),
+    radial-gradient(ellipse 900px 500px at 90% 10%, #FBEFD8 0%, transparent 55%),
+    linear-gradient(160deg, #F7F1E5 0%, #EFE4CC 55%, #F5EDDC 100%);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: 'Cormorant Garamond', serif;
+  min-height:100vh;
+  -webkit-font-smoothing: antialiased;
+}
+::selection{ background: var(--gold-pale); color: var(--ink); }
+
+/* ---------- HEADER ---------- */
+.header{ padding: 46px 16px 20px; text-align:center; position: relative; }
+.crown{ width:46px; height:46px; margin-bottom:10px; opacity:.92; }
+.crown path, .crown circle{ fill:none; stroke: var(--gold); stroke-width:1.3; stroke-linejoin:round; stroke-linecap:round; }
+.crown .jewel{ fill: var(--gold-soft); stroke:none; }
+.header .eyebrow{ font-family:'Cormorant Garamond', serif; font-style: italic; font-weight:500; color: var(--ink-soft); font-size: 15px; letter-spacing: 1.5px; margin-bottom: 2px; }
+.header h1{ font-family:'Playfair Display', serif; font-weight:600; font-style: italic; letter-spacing: 0.5px; color: var(--ink); font-size: clamp(26px, 5vw, 40px); margin: 0 0 6px; }
+.header .subtitle{ font-family:'Inter', sans-serif; color: var(--ink-soft); font-size: 11.5px; letter-spacing: 2px; text-transform: uppercase; }
+.flourish{ width:120px; height:14px; margin:16px auto 0; opacity:0.8; }
+.flourish path{ stroke: var(--gold-soft); fill:none; stroke-width:1; }
+.flourish circle{ fill: var(--gold-soft); }
+.user-badge{ position:absolute; top:22px; right:20px; display:flex; align-items:center; gap:10px; font-family:'Inter',sans-serif; font-size:12px; color: var(--ink-soft); }
+.user-badge .name{ font-weight:600; color: var(--ink); }
+.user-badge button{ background:none; border:1px solid var(--line); color: var(--ink-soft); padding:5px 11px; border-radius:5px; font-family:'Inter',sans-serif; font-size:11px; cursor:pointer; }
+.user-badge button:hover{ border-color: var(--gold); color: var(--gold); }
+
+/* ---------- NAV ---------- */
+.tabs{ display:flex; flex-wrap: wrap; gap: 4px; justify-content:center; padding: 4px 10px 22px; }
+.tab-btn{ font-family:'Inter', sans-serif; font-size: 11px; font-weight:600; letter-spacing: 0.8px; padding: 9px 16px; background: transparent; border: none; border-bottom: 1.5px solid transparent; color: var(--ink-soft); cursor:pointer; transition: all .18s ease; text-transform: uppercase; }
+.tab-btn:hover{ color: var(--ink); }
+.tab-btn.active{ color: var(--gold); border-bottom-color: var(--gold); }
+
+/* ---------- LAYOUT ---------- */
+.content{ max-width: 1140px; margin: 0 auto; padding: 10px 16px 70px; }
+.section-title{ font-family:'Playfair Display', serif; font-style: italic; font-weight: 600; color: var(--ink); font-size: 19px; letter-spacing: 0.3px; margin: 34px 0 14px; display:flex; align-items:center; gap:12px; }
+.section-title:first-child{ margin-top:6px; }
+.section-title::after{ content:""; flex:1; height:1px; background: linear-gradient(90deg, var(--line), transparent); }
+
+.frame{ position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 22px; margin-bottom: 18px; }
+
+.kpi-grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(160px,1fr)); gap:0; margin-bottom: 8px; }
+.kpi{ padding: 6px 18px; text-align:left; border-left: 1px solid var(--line); }
+.kpi:first-child{ border-left:none; padding-left:2px; }
+.kpi .label{ font-family:'Inter',sans-serif; font-size:10.5px; letter-spacing:1px; text-transform:uppercase; color: var(--ink-soft); margin-bottom:8px; }
+.kpi .value{ font-family:'Playfair Display',serif; font-size: clamp(19px,2.6vw,26px); color: var(--ink); font-weight:600; }
+.kpi.warn .value{ color: var(--warn); }
+.kpi.ok .value{ color: var(--ok); }
+
+table{ width:100%; border-collapse: collapse; font-family:'Inter',sans-serif; font-size: 13.5px; }
+thead th{ background: transparent; color: var(--ink-soft); font-family:'Inter',sans-serif; font-weight:600; font-size:10px; letter-spacing:0.8px; text-transform:uppercase; padding: 10px 10px; text-align:left; border-bottom: 1.5px solid var(--gold-soft); }
+tbody td{ padding: 10px; border-bottom: 1px solid var(--line); vertical-align: middle;}
+tbody tr:hover{ background: #FBF6EA; }
+tbody tr.pend{ background: #FBF0EC; }
+.table-wrap{ overflow-x:auto; border:1px solid var(--line); border-radius:10px; }
+
+.badge{ display:inline-block; padding:2px 10px; border-radius: 20px; font-size:11px; font-family:'Inter',sans-serif; font-weight:600; letter-spacing:.2px; }
+.badge.sim{ background:#EBF1E6; color: var(--ok); }
+.badge.nao{ background:#F7E9E5; color: var(--warn); }
+.badge.acao-criou{ background:#EBF1E6; color: var(--ok); }
+.badge.acao-atualizou{ background:#F6EEDD; color: var(--gold); }
+.badge.acao-excluiu{ background:#F7E9E5; color: var(--warn); }
+.obs-flag{ background:#FBF3DE; border-left:2px solid var(--gold); padding:3px 8px; font-size:12.5px; border-radius: 0 4px 4px 0; }
+
+.btn{ font-family:'Inter',sans-serif; font-size:12px; font-weight:600; padding:8px 16px; border-radius:5px; border:1px solid var(--gold); background: var(--gold); color:#fff; cursor:pointer; letter-spacing:.2px; }
+.btn.secondary{ background: transparent; color: var(--ink); border-color: var(--line); }
+.btn.danger{ background: transparent; border-color: var(--warn); color: var(--warn); }
+.btn.small{ padding:5px 10px; font-size:11px; }
+.btn:hover{ filter: brightness(1.04); opacity:.92; }
+.btn:disabled{ opacity:.5; cursor:not-allowed; }
+
+.form-grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(150px,1fr)); gap:14px; margin-bottom:16px; }
+label{ font-family:'Inter',sans-serif; font-size:10.5px; color: var(--ink-soft); display:block; margin-bottom:5px; text-transform:uppercase; letter-spacing:0.6px;}
+input, select, textarea{ width:100%; font-family:'Inter',sans-serif; font-size:14px; padding: 9px 10px; border:1px solid var(--line); border-radius:5px; background: #FEFDFA; color: var(--ink); }
+input:focus, select:focus, textarea:focus{ outline:none; border-color: var(--gold); box-shadow: 0 0 0 3px rgba(169,130,47,0.1); }
+
+.actions-row{ display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+.filters-row{ display:flex; gap:14px; flex-wrap:wrap; margin-bottom:16px; align-items:flex-end; }
+.filters-row > div{ min-width:140px; }
+
+.chart-box{ background: var(--card); border:1px solid var(--line); border-radius:10px; padding:18px; }
+.two-col{ display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+@media (max-width: 760px){ .two-col{ grid-template-columns: 1fr; } }
+
+.empty-state{ text-align:center; padding: 34px 10px; color: var(--ink-soft); font-style: italic; }
+.small-note{ font-family:'Inter',sans-serif; font-size:11.5px; color: var(--ink-soft); margin-top:6px; }
+.loading{ text-align:center; padding:60px; font-family:'Playfair Display',serif; font-style:italic; color: var(--ink-soft); }
+
+/* ---------- LOGIN ---------- */
+.login-wrap{ max-width: 380px; margin: 60px auto; padding: 0 16px; }
+.login-card{ background: var(--card); border:1px solid var(--line); border-radius:12px; box-shadow: var(--shadow); padding: 32px 28px; }
+.login-card h2{ font-family:'Playfair Display',serif; font-style:italic; font-weight:600; text-align:center; margin: 0 0 4px; font-size:22px; }
+.login-card .lead{ text-align:center; color: var(--ink-soft); font-family:'Inter',sans-serif; font-size:12px; margin-bottom:22px; letter-spacing:.4px; }
+.login-error{ background:#F7E9E5; color: var(--warn); font-family:'Inter',sans-serif; font-size:12.5px; padding:9px 12px; border-radius:6px; margin-bottom:14px; display:none; }
+.login-error.show{ display:block; }
+.login-card .btn{ width:100%; margin-top:6px; padding:11px; }
+.forgot-link{ text-align:center; margin-top:14px; }
+.forgot-link a{ font-family:'Inter',sans-serif; font-size:11.5px; color: var(--ink-soft); text-decoration:underline; cursor:pointer; }
+</style>
+</head>
+<body>
+
+<!-- ============ TELA DE LOGIN ============ -->
+<div id="loginScreen" class="login-wrap" style="display:none;">
+  <div class="header" style="padding-top:0;">
+    <svg class="crown" viewBox="0 0 64 64">
+      <path d="M8 44 L11 22 L23 33 L32 10 L41 33 L53 22 L56 44 Z"/>
+      <path d="M8 44 H56 V50 H8 Z"/>
+      <circle class="jewel" cx="32" cy="40" r="2.4"/><circle class="jewel" cx="19" cy="40" r="1.7"/><circle class="jewel" cx="45" cy="40" r="1.7"/>
+    </svg>
+    <div class="eyebrow">Almoços &amp; Cantinas</div>
+    <h1>Sistema Realeza</h1>
+  </div>
+  <div class="login-card">
+    <h2>Entrar</h2>
+    <div class="lead">Acesso restrito à equipe do ministério</div>
+    <div class="login-error" id="loginError"></div>
+    <label>E-mail</label>
+    <input type="email" id="loginEmail" placeholder="seu@email.com" style="margin-bottom:12px;">
+    <label>Senha</label>
+    <input type="password" id="loginSenha" placeholder="••••••••">
+    <button class="btn" id="btnLogin">Entrar</button>
+    <div class="forgot-link"><a id="btnForgot">Esqueci minha senha</a></div>
+    <div style="display:flex; align-items:center; gap:10px; margin:18px 0;">
+      <div style="flex:1; height:1px; background:var(--line);"></div>
+      <span style="font-family:'Inter',sans-serif; font-size:11px; color:var(--ink-soft);">ou</span>
+      <div style="flex:1; height:1px; background:var(--line);"></div>
+    </div>
+    <button class="btn secondary" id="btnGoogle" style="width:100%; display:flex; align-items:center; justify-content:center; gap:8px;">
+      <svg width="16" height="16" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.3 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.1 8 3l6-6C34.5 5.5 29.5 3.5 24 3.5 12.7 3.5 3.5 12.7 3.5 24S12.7 44.5 24 44.5 44.5 35.3 44.5 24c0-1.2-.1-2.4-.9-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.9 18.9 13 24 13c3.1 0 5.8 1.1 8 3l6-6C34.5 5.5 29.5 3.5 24 3.5c-7.5 0-13.9 4.2-17.2 10.4z"/><path fill="#4CAF50" d="M24 44.5c5.4 0 10.3-1.9 14-5.1l-6.5-5.5C29.4 35.4 26.9 36 24 36c-5.3 0-9.7-3.3-11.3-7.9l-6.5 5C9.9 40.1 16.4 44.5 24 44.5z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.3-2.3 4.2-4.3 5.6l6.5 5.5C41 36 44.5 30.6 44.5 24c0-1.2-.1-2.4-.9-3.5z"/></svg>
+      Entrar com Google
+    </button>
+    <div class="small-note" style="text-align:center; margin-top:14px;">Acesso liberado apenas para e-mails autorizados pelo administrador.</div>
+  </div>
+</div>
+
+<!-- ============ APP ============ -->
+<div id="app" style="display:none;">
+  <div class="header">
+    <div class="user-badge" id="userBadge"></div>
+    <svg class="crown" viewBox="0 0 64 64">
+      <path d="M8 44 L11 22 L23 33 L32 10 L41 33 L53 22 L56 44 Z"/>
+      <path d="M8 44 H56 V50 H8 Z"/>
+      <circle class="jewel" cx="32" cy="40" r="2.4"/><circle class="jewel" cx="19" cy="40" r="1.7"/><circle class="jewel" cx="45" cy="40" r="1.7"/>
+    </svg>
+    <div class="eyebrow">Almoços &amp; Cantinas</div>
+    <h1>Sistema Realeza</h1>
+    <div class="subtitle">Gestão de Vendas do Ministério</div>
+    <svg class="flourish" viewBox="0 0 200 20"><path d="M0 10 H82"/><circle cx="100" cy="10" r="3"/><path d="M118 10 H200"/></svg>
+  </div>
+  <div class="tabs" id="tabs"></div>
+  <div class="content" id="content"><div class="loading">Carregando…</div></div>
+</div>
+
+<div id="bootLoading" class="loading">Carregando…</div>
+
+<script>
+/* ==================================================================
+   CONFIGURAÇÃO DO FIREBASE
+   Troque os valores abaixo pelos do SEU projeto Firebase (gratuito).
+   Veja o guia de instalação para saber onde pegar esses dados.
+================================================================== */
+const firebaseConfig = {
+  apiKey: "AIzaSyDb4aXS-qldoBBdf1JRlIcIODk60CGwu5o",
+  authDomain: "realeza-casais.firebaseapp.com",
+  projectId: "realeza-casais",
+  storageBucket: "realeza-casais.firebasestorage.app",
+  messagingSenderId: "506478085084",
+  appId: "1:506478085084:web:2b43c6c16617a9ec050519"
+};
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+/* ==================== ESTADO ==================== */
+const TABS = [
+  {id:'dashboard', label:'Dashboard Geral'},
+  {id:'dashboardEvento', label:'Dashboard por Evento'},
+  {id:'eventos', label:'Eventos'},
+  {id:'cardapio', label:'Cardápio'},
+  {id:'reservas', label:'Reservas'},
+  {id:'despesas', label:'Despesas'},
+  {id:'clientes', label:'Clientes'},
+  {id:'auditoria', label:'Auditoria'},
+];
+
+let DB = { eventos:[], cardapio:[], reservas:[], despesas:[], clientes:[], auditoria:[] };
+let currentTab = 'dashboard';
+let charts = {};
+let currentUser = null;
+let listenersStarted = false;
+
+/* ==================== HELPERS ==================== */
+const fmtMoney = (n) => 'R$ ' + (Number(n)||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+const fmtDateBR = (iso) => { if(!iso) return ''; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; };
+const monthLabel = (iso) => { const [y,m] = iso.split('-'); const meses=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return meses[parseInt(m,10)-1] + '/' + y; };
+function eventoKey(data,tipo){ return data+'|'+tipo; }
+function eventosOptions(){
+  return [...DB.eventos].sort((a,b)=>a.data.localeCompare(b.data)).map(e=>({
+    value: eventoKey(e.data,e.tipo), label: `${fmtDateBR(e.data)} — ${e.tipo}`, data:e.data, tipo:e.tipo, cultos:e.cultos
+  }));
+}
+function el(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstChild; }
+function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+function fmtWhen(ts){ if(!ts || !ts.toDate) return '—'; const d = ts.toDate(); return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
+function userName(){ return (currentUser && (currentUser.displayName || currentUser.email)) || 'Desconhecido'; }
+
+/* ==================== AUDITORIA ==================== */
+async function auditLog(acao, colecao, resumo){
+  try{
+    await db.collection('auditoria').add({
+      usuario: currentUser.email, nome: userName(),
+      acao, colecao, resumo,
+      timestamp: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  }catch(e){ console.error('Falha ao registrar auditoria', e); }
+}
+
+/* ==================== AUTENTICAÇÃO ==================== */
+const googleProvider = new firebase.auth.GoogleAuthProvider();
+document.getElementById('btnLogin').addEventListener('click', doLogin);
+document.getElementById('loginSenha').addEventListener('keydown', e=>{ if(e.key==='Enter') doLogin(); });
+document.getElementById('btnGoogle').addEventListener('click', async ()=>{
+  const btn = document.getElementById('btnGoogle');
+  btn.disabled = true;
+  try{
+    await auth.signInWithPopup(googleProvider);
+  }catch(e){
+    if(e.code !== 'auth/popup-closed-by-user'){ showLoginError(traduzErro(e.code)); }
+  }finally{
+    btn.disabled = false;
+  }
+});
+document.getElementById('btnForgot').addEventListener('click', async ()=>{
+  const email = document.getElementById('loginEmail').value.trim();
+  if(!email){ showLoginError('Digite seu e-mail primeiro, depois clique em "Esqueci minha senha".'); return; }
+  try{
+    await auth.sendPasswordResetEmail(email);
+    showLoginError('Enviamos um link de redefinição para o seu e-mail.', true);
+  }catch(e){ showLoginError(traduzErro(e.code)); }
+});
+function showLoginError(msg, ok){
+  const box = document.getElementById('loginError');
+  box.textContent = msg; box.classList.add('show');
+  box.style.background = ok ? '#EBF1E6' : '#F7E9E5';
+  box.style.color = ok ? '#5C7A4B' : '#A5493A';
+}
+function traduzErro(code){
+  const map = {
+    'auth/invalid-email':'E-mail inválido.',
+    'auth/user-not-found':'Usuário não encontrado.',
+    'auth/wrong-password':'Senha incorreta.',
+    'auth/invalid-credential':'E-mail ou senha incorretos.',
+    'auth/too-many-requests':'Muitas tentativas. Aguarde um pouco e tente novamente.',
+  };
+  return map[code] || 'Não foi possível entrar. Tente novamente.';
+}
+async function doLogin(){
+  const email = document.getElementById('loginEmail').value.trim();
+  const senha = document.getElementById('loginSenha').value;
+  if(!email || !senha){ showLoginError('Preencha e-mail e senha.'); return; }
+  const btn = document.getElementById('btnLogin');
+  btn.disabled = true; btn.textContent = 'Entrando…';
+  try{
+    await auth.signInWithEmailAndPassword(email, senha);
+  }catch(e){
+    showLoginError(traduzErro(e.code));
+  }finally{
+    btn.disabled = false; btn.textContent = 'Entrar';
+  }
+}
+
+auth.onAuthStateChanged(async user=>{
+  document.getElementById('bootLoading').style.display = 'none';
+
+  if(user){
+    // Verifica se este e-mail está na lista de autorizados (coleção "equipe")
+    let autorizado = false;
+    try{
+      const doc = await db.collection('equipe').doc(user.email.toLowerCase()).get();
+      autorizado = doc.exists;
+    }catch(e){
+      console.error('Erro ao checar autorização', e);
+    }
+    if(!autorizado){
+      showLoginError(`O e-mail ${user.email} ainda não tem acesso liberado. Peça ao administrador do sistema para autorizar.`);
+      await auth.signOut();
+      currentUser = null;
+      document.getElementById('app').style.display = 'none';
+      document.getElementById('loginScreen').style.display = 'block';
+      return;
+    }
+    currentUser = user;
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('app').style.display = 'block';
+    document.getElementById('userBadge').innerHTML =
+      `<span class="name">${escapeHtml(userName())}</span><button id="btnLogout">Sair</button>`;
+    document.getElementById('btnLogout').addEventListener('click', ()=>auth.signOut());
+    if(!listenersStarted){ startListeners(); listenersStarted = true; } else { render(); }
+  } else {
+    currentUser = null;
+    document.getElementById('app').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'block';
+  }
+});
+
+/* ==================== LISTENERS EM TEMPO REAL ==================== */
+function startListeners(){
+  db.collection('eventos').onSnapshot(snap=>{
+    DB.eventos = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, e=>console.error(e));
+
+  db.collection('cardapio').onSnapshot(snap=>{
+    DB.cardapio = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, e=>console.error(e));
+
+  db.collection('reservas').onSnapshot(snap=>{
+    DB.reservas = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, e=>console.error(e));
+
+  db.collection('despesas').onSnapshot(snap=>{
+    DB.despesas = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, e=>console.error(e));
+
+  db.collection('clientes').onSnapshot(snap=>{
+    DB.clientes = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, e=>console.error(e));
+
+  db.collection('auditoria').orderBy('timestamp','desc').limit(300).onSnapshot(snap=>{
+    DB.auditoria = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    if(currentTab==='auditoria') render();
+  }, e=>console.error(e));
+
+  render();
+}
+
+/* ==================== NAV ==================== */
+function renderTabs(){
+  const box = document.getElementById('tabs');
+  box.innerHTML='';
+  TABS.forEach(t=>{
+    const b = el(`<button class="tab-btn ${t.id===currentTab?'active':''}">${t.label}</button>`);
+    b.addEventListener('click', ()=>{ currentTab=t.id; render(); });
+    box.appendChild(b);
+  });
+}
+
+/* ==================== RENDER ROUTER ==================== */
+function render(){
+  if(!currentUser) return;
+  renderTabs();
+  const c = document.getElementById('content');
+  c.innerHTML='';
+  if(currentTab==='dashboard') renderDashboardGeral(c);
+  else if(currentTab==='dashboardEvento') renderDashboardEvento(c);
+  else if(currentTab==='eventos') renderEventos(c);
+  else if(currentTab==='cardapio') renderCardapio(c);
+  else if(currentTab==='reservas') renderReservas(c);
+  else if(currentTab==='despesas') renderDespesas(c);
+  else if(currentTab==='clientes') renderClientes(c);
+  else if(currentTab==='auditoria') renderAuditoria(c);
+}
+
+/* ==================== DASHBOARD GERAL ==================== */
+function renderDashboardGeral(c){
+  const totalVendido = DB.reservas.reduce((s,r)=>s+r.qtd*r.precoUnit,0);
+  const totalDespesas = DB.despesas.reduce((s,d)=>s+Number(d.valor),0);
+  const lucro = totalVendido-totalDespesas;
+  const naoPagos = DB.reservas.filter(r=>r.pago==='Não').length;
+  const naoEntregues = DB.reservas.filter(r=>r.entregue==='Não').length;
+
+  c.appendChild(el(`<div class="section-title">Resumo Global</div>`));
+  c.appendChild(el(`<div class="frame"><div class="kpi-grid">
+    <div class="kpi ok"><div class="label">Total Vendido</div><div class="value">${fmtMoney(totalVendido)}</div></div>
+    <div class="kpi"><div class="label">Total Despesas</div><div class="value">${fmtMoney(totalDespesas)}</div></div>
+    <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Lucro Total</div><div class="value">${fmtMoney(lucro)}</div></div>
+    <div class="kpi ${naoPagos>0?'warn':''}"><div class="label">Pedidos Não Pagos</div><div class="value">${naoPagos}</div></div>
+    <div class="kpi ${naoEntregues>0?'warn':''}"><div class="label">Não Entregues</div><div class="value">${naoEntregues}</div></div>
+  </div></div>`));
+
+  c.appendChild(el(`<div class="section-title">Comparativo por Tipo de Evento</div>`));
+  const tipos = ['Almoço','Cantina'];
+  const compData = tipos.map(t=>({
+    tipo:t,
+    receita: DB.reservas.filter(r=>r.tipo===t).reduce((s,r)=>s+r.qtd*r.precoUnit,0),
+    despesa: DB.despesas.filter(d=>d.tipo===t).reduce((s,d)=>s+Number(d.valor),0),
+  }));
+  const two1 = el(`<div class="two-col"></div>`);
+  two1.appendChild(el(`<div class="chart-box"><canvas id="chartTipo" height="220"></canvas></div>`));
+  two1.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Tipo</th><th>Receita</th><th>Despesa</th><th>Lucro</th></tr></thead>
+    <tbody>${compData.map(x=>`<tr><td>${x.tipo}</td><td>${fmtMoney(x.receita)}</td><td>${fmtMoney(x.despesa)}</td><td>${fmtMoney(x.receita-x.despesa)}</td></tr>`).join('')}</tbody>
+  </table></div></div>`));
+  c.appendChild(two1);
+
+  c.appendChild(el(`<div class="section-title">Evolução Mensal</div>`));
+  const months = {};
+  DB.reservas.forEach(r=>{ const k=r.data.slice(0,7); months[k]=months[k]||{receita:0,despesa:0}; months[k].receita+=r.qtd*r.precoUnit; });
+  DB.despesas.forEach(d=>{ const k=d.data.slice(0,7); months[k]=months[k]||{receita:0,despesa:0}; months[k].despesa+=Number(d.valor); });
+  const monthKeys = Object.keys(months).sort();
+  c.appendChild(el(`<div class="frame"><div class="chart-box"><canvas id="chartMensal" height="200"></canvas></div></div>`));
+
+  c.appendChild(el(`<div class="section-title">Ranking de Itens Mais Vendidos</div>`));
+  const itemAgg = {};
+  DB.reservas.forEach(r=>{ itemAgg[r.item]=itemAgg[r.item]||{qtd:0,valor:0}; itemAgg[r.item].qtd+=r.qtd; itemAgg[r.item].valor+=r.qtd*r.precoUnit; });
+  const ranking = Object.entries(itemAgg).sort((a,b)=>b[1].qtd-a[1].qtd);
+  c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>#</th><th>Item</th><th>Qtd Vendida</th><th>Valor Total</th></tr></thead>
+    <tbody>${ranking.length? ranking.map((r,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(r[0])}</td><td>${r[1].qtd}</td><td>${fmtMoney(r[1].valor)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty-state">Sem vendas registradas ainda</td></tr>'}</tbody>
+  </table></div></div>`));
+
+  if(charts.tipo) charts.tipo.destroy();
+  charts.tipo = new Chart(document.getElementById('chartTipo'), {
+    type:'bar',
+    data:{ labels: compData.map(x=>x.tipo), datasets:[
+      {label:'Receita', data: compData.map(x=>x.receita), backgroundColor:'#A9822F'},
+      {label:'Despesa', data: compData.map(x=>x.despesa), backgroundColor:'#C08B6E'},
+    ]},
+    options:{ responsive:true, plugins:{legend:{position:'bottom'}} }
+  });
+  if(charts.mensal) charts.mensal.destroy();
+  charts.mensal = new Chart(document.getElementById('chartMensal'), {
+    type:'line',
+    data:{ labels: monthKeys.map(k=>monthLabel(k+'-01')), datasets:[
+      {label:'Receita', data: monthKeys.map(k=>months[k].receita), borderColor:'#A9822F', backgroundColor:'#E4D6AE66', tension:.3, fill:true},
+      {label:'Despesa', data: monthKeys.map(k=>months[k].despesa), borderColor:'#A5493A', backgroundColor:'#A5493A18', tension:.3, fill:true},
+    ]},
+    options:{ responsive:true, plugins:{legend:{position:'bottom'}} }
+  });
+}
+
+/* ==================== DASHBOARD POR EVENTO ==================== */
+function renderDashboardEvento(c){
+  const opts = eventosOptions();
+  if(opts.length===0){
+    c.appendChild(el(`<div class="frame empty-state">Cadastre um evento na aba "Eventos" para ver o dashboard dele aqui.</div>`));
+    return;
+  }
+  window._selEvento = window._selEvento || opts[0].value;
+  if(!opts.find(o=>o.value===window._selEvento)) window._selEvento = opts[0].value;
+
+  const selWrap = el(`<div class="frame">
+    <label>Selecione o Evento</label>
+    <select id="eventoSelect">${opts.map(o=>`<option value="${o.value}" ${o.value===window._selEvento?'selected':''}>${o.label}</option>`).join('')}</select>
+  </div>`);
+  c.appendChild(selWrap);
+  selWrap.querySelector('#eventoSelect').addEventListener('change', (e)=>{ window._selEvento = e.target.value; render(); });
+
+  const sel = opts.find(o=>o.value===window._selEvento);
+  const resev = DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo);
+  const desev = DB.despesas.filter(d=>d.data===sel.data && d.tipo===sel.tipo);
+
+  const totalVendido = resev.reduce((s,r)=>s+r.qtd*r.precoUnit,0);
+  const totalDespesa = desev.reduce((s,d)=>s+Number(d.valor),0);
+  const lucro = totalVendido-totalDespesa;
+  const clientesUnicos = new Set(resev.map(r=>r.cliente.trim().toLowerCase())).size;
+  const naoPagos = resev.filter(r=>r.pago==='Não');
+  const naoEntregues = resev.filter(r=>r.entregue==='Não');
+
+  c.appendChild(el(`<div class="section-title">Resumo do Dia — ${sel.label}</div>`));
+  c.appendChild(el(`<div class="frame"><div class="kpi-grid">
+    <div class="kpi ok"><div class="label">Total Vendido</div><div class="value">${fmtMoney(totalVendido)}</div></div>
+    <div class="kpi"><div class="label">Despesas</div><div class="value">${fmtMoney(totalDespesa)}</div></div>
+    <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Lucro do Dia</div><div class="value">${fmtMoney(lucro)}</div></div>
+    <div class="kpi"><div class="label">Clientes Únicos</div><div class="value">${clientesUnicos}</div></div>
+    <div class="kpi ${naoPagos.length?'warn':''}"><div class="label">Não Pagos</div><div class="value">${naoPagos.length}</div></div>
+    <div class="kpi ${naoEntregues.length?'warn':''}"><div class="label">Não Entregues</div><div class="value">${naoEntregues.length}</div></div>
+  </div></div>`));
+
+  const horarios = [...new Set([...(sel.cultos||[]), ...resev.map(r=>r.horario)])];
+  const horData = horarios.map(h=>{
+    const rs = resev.filter(r=>r.horario===h);
+    return { h, qtd: rs.reduce((s,r)=>s+r.qtd,0), valor: rs.reduce((s,r)=>s+r.qtd*r.precoUnit,0),
+      entregues: rs.filter(r=>r.entregue==='Sim').length, pendentes: rs.filter(r=>r.entregue==='Não').length };
+  });
+  c.appendChild(el(`<div class="section-title">Quebra por Horário de Entrega</div>`));
+  const two2 = el(`<div class="two-col"></div>`);
+  two2.appendChild(el(`<div class="chart-box"><canvas id="chartHorario" height="220"></canvas></div>`));
+  two2.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Horário</th><th>Qtd</th><th>Valor</th><th>Entregues</th><th>Pendentes</th></tr></thead>
+    <tbody>${horData.map(x=>`<tr><td>${x.h}</td><td>${x.qtd}</td><td>${fmtMoney(x.valor)}</td><td>${x.entregues}</td><td>${x.pendentes}</td></tr>`).join('')}</tbody>
+  </table></div></div>`));
+  c.appendChild(two2);
+
+  const itemAgg = {};
+  resev.forEach(r=>{ itemAgg[r.item]=itemAgg[r.item]||{qtd:0,valor:0}; itemAgg[r.item].qtd+=r.qtd; itemAgg[r.item].valor+=r.qtd*r.precoUnit; });
+  const ranking = Object.entries(itemAgg).sort((a,b)=>b[1].qtd-a[1].qtd);
+  c.appendChild(el(`<div class="section-title">Itens Vendidos Neste Evento</div>`));
+  c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Item</th><th>Qtd</th><th>Valor</th></tr></thead>
+    <tbody>${ranking.length? ranking.map(r=>`<tr><td>${escapeHtml(r[0])}</td><td>${r[1].qtd}</td><td>${fmtMoney(r[1].valor)}</td></tr>`).join('') : '<tr><td colspan="3" class="empty-state">Sem pedidos neste evento ainda</td></tr>'}</tbody>
+  </table></div></div>`));
+
+  c.appendChild(el(`<div class="section-title">Pendências — Quem Falta Pagar / Retirar</div>`));
+  const two3 = el(`<div class="two-col"></div>`);
+  two3.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Falta Pagar</th><th>Item</th><th>Valor</th></tr></thead>
+    <tbody>${naoPagos.length? naoPagos.map(r=>`<tr><td>${escapeHtml(r.cliente)}</td><td>${escapeHtml(r.item)}</td><td>${fmtMoney(r.qtd*r.precoUnit)}</td></tr>`).join('') : '<tr><td colspan="3" class="empty-state">Todo mundo pagou 🎉</td></tr>'}</tbody>
+  </table></div></div>`));
+  two3.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Falta Retirar</th><th>Item</th><th>Horário</th></tr></thead>
+    <tbody>${naoEntregues.length? naoEntregues.map(r=>`<tr><td>${escapeHtml(r.cliente)}</td><td>${escapeHtml(r.item)}</td><td>${r.horario}</td></tr>`).join('') : '<tr><td colspan="3" class="empty-state">Tudo entregue 🎉</td></tr>'}</tbody>
+  </table></div></div>`));
+  c.appendChild(two3);
+
+  if(charts.horario) charts.horario.destroy();
+  charts.horario = new Chart(document.getElementById('chartHorario'), {
+    type:'bar',
+    data:{ labels: horData.map(x=>x.h), datasets:[{label:'Valor Vendido (R$)', data: horData.map(x=>x.valor), backgroundColor:'#A9822F'}] },
+    options:{ responsive:true, plugins:{legend:{display:false}} }
+  });
+}
+
+/* ==================== EVENTOS ==================== */
+function renderEventos(c){
+  c.appendChild(el(`<div class="section-title">Novo Evento</div>`));
+  const form = el(`<div class="frame">
+    <div class="form-grid">
+      <div><label>Data</label><input type="date" id="f_data"></div>
+      <div><label>Tipo</label><select id="f_tipo"><option>Almoço</option><option>Cantina</option><option>Outro</option></select></div>
+      <div><label>Cultos (ex: 17h,19h)</label><input type="text" id="f_cultos" placeholder="17h,19h"></div>
+      <div><label>Status</label><select id="f_status"><option>Aberto</option><option>Encerrado</option></select></div>
+    </div>
+    <button class="btn" id="btnAdd">+ Adicionar Evento</button>
+  </div>`);
+  c.appendChild(form);
+  form.querySelector('#btnAdd').addEventListener('click', async ()=>{
+    const data = form.querySelector('#f_data').value;
+    const tipo = form.querySelector('#f_tipo').value;
+    const cultosRaw = form.querySelector('#f_cultos').value;
+    const status = form.querySelector('#f_status').value;
+    if(!data || !cultosRaw.trim()){ alert('Preencha data e cultos.'); return; }
+    const cultos = cultosRaw.split(',').map(s=>s.trim()).filter(Boolean);
+    await db.collection('eventos').add({ data, tipo, cultos, status });
+    await auditLog('Criou', 'eventos', `Evento ${fmtDateBR(data)} — ${tipo}`);
+  });
+
+  c.appendChild(el(`<div class="section-title">Eventos Cadastrados</div>`));
+  const list = [...DB.eventos].sort((a,b)=>b.data.localeCompare(a.data));
+  const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Data</th><th>Tipo</th><th>Cultos</th><th>Status</th><th></th></tr></thead>
+    <tbody>${list.length? list.map(e=>`<tr data-id="${e.id}">
+      <td>${fmtDateBR(e.data)}</td><td>${e.tipo}</td><td>${(e.cultos||[]).join(', ')}</td>
+      <td><span class="badge ${e.status==='Aberto'?'sim':'nao'}">${e.status}</span></td>
+      <td><button class="btn danger small" data-del="${e.id}">Excluir</button></td>
+    </tr>`).join('') : '<tr><td colspan="5" class="empty-state">Nenhum evento cadastrado</td></tr>'}</tbody>
+  </table></div></div>`);
+  c.appendChild(tableWrap);
+  tableWrap.querySelectorAll('[data-del]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      if(!confirm('Excluir este evento? (reservas/despesas ligadas a ele não serão apagadas)')) return;
+      const ev = DB.eventos.find(e=>e.id===btn.dataset.del);
+      await db.collection('eventos').doc(btn.dataset.del).delete();
+      await auditLog('Excluiu', 'eventos', `Evento ${fmtDateBR(ev.data)} — ${ev.tipo}`);
+    });
+  });
+}
+
+/* ==================== CARDÁPIO ==================== */
+function renderCardapio(c){
+  c.appendChild(el(`<div class="section-title">Novo Item</div>`));
+  const form = el(`<div class="frame">
+    <div class="form-grid">
+      <div><label>Item</label><input type="text" id="f_item" placeholder="Ex: Pastel de Carne"></div>
+      <div><label>Categoria</label><input type="text" id="f_cat" placeholder="Ex: Salgado"></div>
+      <div><label>Preço (R$)</label><input type="number" step="0.01" id="f_preco"></div>
+      <div><label>Ativo</label><select id="f_ativo"><option value="true">Sim</option><option value="false">Não</option></select></div>
+    </div>
+    <button class="btn" id="btnAdd">+ Adicionar Item</button>
+  </div>`);
+  c.appendChild(form);
+  form.querySelector('#btnAdd').addEventListener('click', async ()=>{
+    const item = form.querySelector('#f_item').value.trim();
+    const categoria = form.querySelector('#f_cat').value.trim();
+    const preco = parseFloat(form.querySelector('#f_preco').value);
+    const ativo = form.querySelector('#f_ativo').value==='true';
+    if(!item || isNaN(preco)){ alert('Preencha nome do item e preço.'); return; }
+    await db.collection('cardapio').add({ item, categoria, preco, ativo });
+    await auditLog('Criou', 'cardapio', `Item "${item}" (${fmtMoney(preco)})`);
+  });
+
+  c.appendChild(el(`<div class="section-title">Itens do Cardápio</div>`));
+  const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Item</th><th>Categoria</th><th>Preço</th><th>Ativo</th><th></th></tr></thead>
+    <tbody>${DB.cardapio.length? DB.cardapio.map(i=>`<tr data-id="${i.id}">
+      <td>${escapeHtml(i.item)}</td><td>${escapeHtml(i.categoria)}</td><td>${fmtMoney(i.preco)}</td>
+      <td><span class="badge ${i.ativo?'sim':'nao'}">${i.ativo?'Sim':'Não'}</span></td>
+      <td><button class="btn danger small" data-del="${i.id}">Excluir</button></td>
+    </tr>`).join('') : '<tr><td colspan="5" class="empty-state">Nenhum item cadastrado</td></tr>'}</tbody>
+  </table></div></div>`);
+  c.appendChild(tableWrap);
+  tableWrap.querySelectorAll('[data-del]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      if(!confirm('Excluir este item do cardápio?')) return;
+      const item = DB.cardapio.find(i=>i.id===btn.dataset.del);
+      await db.collection('cardapio').doc(btn.dataset.del).delete();
+      await auditLog('Excluiu', 'cardapio', `Item "${item.item}"`);
+    });
+  });
+}
+
+/* ==================== RESERVAS ==================== */
+function renderReservas(c){
+  const opts = eventosOptions();
+  const itensAtivos = DB.cardapio.filter(i=>i.ativo);
+
+  c.appendChild(el(`<div class="section-title">Nova Reserva / Pedido</div>`));
+  if(opts.length===0 || itensAtivos.length===0){
+    c.appendChild(el(`<div class="frame empty-state">Cadastre pelo menos um Evento e um Item do Cardápio antes de lançar pedidos.</div>`));
+  } else {
+    const form = el(`<div class="frame">
+      <div class="form-grid">
+        <div><label>Evento</label><select id="f_evento">${opts.map(o=>`<option value="${o.value}">${o.label}</option>`).join('')}</select></div>
+        <div><label>Horário</label><select id="f_horario"></select></div>
+        <div><label>Cliente</label><input type="text" id="f_cliente" list="clientesList" placeholder="Nome do cliente"></div>
+        <div><label>Item</label><select id="f_item">${itensAtivos.map(i=>`<option value="${i.id}">${escapeHtml(i.item)} (${fmtMoney(i.preco)})</option>`).join('')}</select></div>
+        <div><label>Quantidade</label><input type="number" min="1" value="1" id="f_qtd"></div>
+        <div><label>Forma de Pagamento</label><select id="f_pagto"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
+        <div><label>Pago?</label><select id="f_pago"><option>Não</option><option>Sim</option></select></div>
+        <div><label>Entregue?</label><select id="f_entregue"><option>Não</option><option>Sim</option></select></div>
+      </div>
+      <div style="margin-bottom:12px;"><label>⚠️ Observação / Particularidade</label><input type="text" id="f_obs" placeholder="Ex: sem cebola, só peito de frango..."></div>
+      <button class="btn" id="btnAdd">+ Adicionar Pedido</button>
+      <div class="small-note">Lançado automaticamente em nome de: <strong>${escapeHtml(userName())}</strong></div>
+      <datalist id="clientesList">${DB.clientes.map(cl=>`<option value="${escapeHtml(cl.nome)}">`).join('')}</datalist>
+    </div>`);
+    c.appendChild(form);
+
+    const evSel = form.querySelector('#f_evento');
+    const horSel = form.querySelector('#f_horario');
+    function refreshHorarios(){
+      const sel = opts.find(o=>o.value===evSel.value);
+      horSel.innerHTML = (sel.cultos||['-']).map(h=>`<option>${h}</option>`).join('');
+    }
+    evSel.addEventListener('change', refreshHorarios);
+    refreshHorarios();
+
+    form.querySelector('#btnAdd').addEventListener('click', async ()=>{
+      const sel = opts.find(o=>o.value===evSel.value);
+      const cliente = form.querySelector('#f_cliente').value.trim();
+      const itemId = form.querySelector('#f_item').value;
+      const itemObj = DB.cardapio.find(i=>i.id===itemId);
+      const qtd = parseInt(form.querySelector('#f_qtd').value,10);
+      if(!cliente || !itemObj || !qtd || qtd<1){ alert('Preencha cliente, item e quantidade válida.'); return; }
+      const novaReserva = {
+        data: sel.data, tipo: sel.tipo, horario: horSel.value,
+        cliente, item: itemObj.item, qtd, precoUnit: itemObj.preco,
+        observacao: form.querySelector('#f_obs').value.trim(),
+        formaPagamento: form.querySelector('#f_pagto').value,
+        pago: form.querySelector('#f_pago').value,
+        entregue: form.querySelector('#f_entregue').value,
+        vendedor: userName(),
+      };
+      await db.collection('reservas').add(novaReserva);
+      await auditLog('Criou', 'reservas', `Pedido de ${cliente} — ${itemObj.item} (${qtd}x) em ${fmtDateBR(sel.data)}`);
+      if(!DB.clientes.find(cl=>cl.nome.toLowerCase()===cliente.toLowerCase())){
+        await db.collection('clientes').add({nome:cliente, contato:'', obs:''});
+      }
+    });
+  }
+
+  c.appendChild(el(`<div class="section-title">Pedidos Lançados</div>`));
+  window._filtros = window._filtros || {evento:'', pago:'', entregue:''};
+  const filterWrap = el(`<div class="filters-row">
+    <div><label>Evento</label><select id="filtEvento"><option value="">Todos</option>${opts.map(o=>`<option value="${o.value}" ${window._filtros.evento===o.value?'selected':''}>${o.label}</option>`).join('')}</select></div>
+    <div><label>Pago?</label><select id="filtPago"><option value="">Todos</option><option ${window._filtros.pago==='Sim'?'selected':''}>Sim</option><option ${window._filtros.pago==='Não'?'selected':''}>Não</option></select></div>
+    <div><label>Entregue?</label><select id="filtEntregue"><option value="">Todos</option><option ${window._filtros.entregue==='Sim'?'selected':''}>Sim</option><option ${window._filtros.entregue==='Não'?'selected':''}>Não</option></select></div>
+  </div>`);
+  c.appendChild(filterWrap);
+  filterWrap.querySelector('#filtEvento').addEventListener('change', e=>{ window._filtros.evento=e.target.value; render(); });
+  filterWrap.querySelector('#filtPago').addEventListener('change', e=>{ window._filtros.pago=e.target.value; render(); });
+  filterWrap.querySelector('#filtEntregue').addEventListener('change', e=>{ window._filtros.entregue=e.target.value; render(); });
+
+  let list = [...DB.reservas].sort((a,b)=>b.data.localeCompare(a.data));
+  if(window._filtros.evento){ const [d,t]=window._filtros.evento.split('|'); list = list.filter(r=>r.data===d && r.tipo===t); }
+  if(window._filtros.pago){ list = list.filter(r=>r.pago===window._filtros.pago); }
+  if(window._filtros.entregue){ list = list.filter(r=>r.entregue===window._filtros.entregue); }
+
+  const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Data</th><th>Tipo</th><th>Hor.</th><th>Cliente</th><th>Item</th><th>Qtd</th><th>Valor</th><th>Obs.</th><th>Pagto</th><th>Pago</th><th>Entregue</th><th>Lançado por</th><th></th></tr></thead>
+    <tbody>${list.length? list.map(r=>`<tr data-id="${r.id}" class="${(r.pago==='Não'||r.entregue==='Não')?'pend':''}">
+      <td>${fmtDateBR(r.data)}</td><td>${r.tipo}</td><td>${r.horario}</td><td>${escapeHtml(r.cliente)}</td>
+      <td>${escapeHtml(r.item)}</td><td>${r.qtd}</td><td>${fmtMoney(r.qtd*r.precoUnit)}</td>
+      <td>${r.observacao?`<span class="obs-flag">${escapeHtml(r.observacao)}</span>`:''}</td>
+      <td>${r.formaPagamento}</td>
+      <td><span class="badge ${r.pago==='Sim'?'sim':'nao'}">${r.pago}</span></td>
+      <td><span class="badge ${r.entregue==='Sim'?'sim':'nao'}">${r.entregue}</span></td>
+      <td>${escapeHtml(r.vendedor||'')}</td>
+      <td style="white-space:nowrap;">
+        <button class="btn secondary small" data-pago="${r.id}">${r.pago==='Sim'?'Marcar Não Pago':'Marcar Pago'}</button>
+        <button class="btn secondary small" data-ent="${r.id}">${r.entregue==='Sim'?'Desfazer Entrega':'Marcar Entregue'}</button>
+        <button class="btn danger small" data-del="${r.id}">Excluir</button>
+      </td>
+    </tr>`).join('') : '<tr><td colspan="13" class="empty-state">Nenhum pedido encontrado</td></tr>'}</tbody>
+  </table></div></div>`);
+  c.appendChild(tableWrap);
+
+  tableWrap.querySelectorAll('[data-pago]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const r = DB.reservas.find(x=>x.id===btn.dataset.pago);
+    const novo = r.pago==='Sim'?'Não':'Sim';
+    await db.collection('reservas').doc(r.id).update({pago:novo});
+    await auditLog('Atualizou', 'reservas', `Pagamento de ${r.cliente} (${r.item}): ${r.pago} → ${novo}`);
+  }));
+  tableWrap.querySelectorAll('[data-ent]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const r = DB.reservas.find(x=>x.id===btn.dataset.ent);
+    const novo = r.entregue==='Sim'?'Não':'Sim';
+    await db.collection('reservas').doc(r.id).update({entregue:novo});
+    await auditLog('Atualizou', 'reservas', `Entrega de ${r.cliente} (${r.item}): ${r.entregue} → ${novo}`);
+  }));
+  tableWrap.querySelectorAll('[data-del]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    if(!confirm('Excluir este pedido?')) return;
+    const r = DB.reservas.find(x=>x.id===btn.dataset.del);
+    await db.collection('reservas').doc(r.id).delete();
+    await auditLog('Excluiu', 'reservas', `Pedido de ${r.cliente} — ${r.item} (${fmtMoney(r.qtd*r.precoUnit)}, pago: ${r.pago})`);
+  }));
+}
+
+/* ==================== DESPESAS ==================== */
+function renderDespesas(c){
+  const opts = eventosOptions();
+  c.appendChild(el(`<div class="section-title">Nova Despesa</div>`));
+  if(opts.length===0){
+    c.appendChild(el(`<div class="frame empty-state">Cadastre um evento primeiro.</div>`));
+  } else {
+    const form = el(`<div class="frame">
+      <div class="form-grid">
+        <div><label>Evento</label><select id="f_evento">${opts.map(o=>`<option value="${o.value}">${o.label}</option>`).join('')}</select></div>
+        <div><label>Descrição</label><input type="text" id="f_desc" placeholder="Ex: Massa e recheio"></div>
+        <div><label>Categoria</label><input type="text" id="f_cat" placeholder="Ex: Ingredientes"></div>
+        <div><label>Valor (R$)</label><input type="number" step="0.01" id="f_valor"></div>
+      </div>
+      <button class="btn" id="btnAdd">+ Adicionar Despesa</button>
+    </div>`);
+    c.appendChild(form);
+    form.querySelector('#btnAdd').addEventListener('click', async ()=>{
+      const sel = opts.find(o=>o.value===form.querySelector('#f_evento').value);
+      const descricao = form.querySelector('#f_desc').value.trim();
+      const categoria = form.querySelector('#f_cat').value.trim();
+      const valor = parseFloat(form.querySelector('#f_valor').value);
+      if(!descricao || isNaN(valor)){ alert('Preencha descrição e valor.'); return; }
+      await db.collection('despesas').add({ data:sel.data, tipo:sel.tipo, descricao, categoria, valor, lancadoPor: userName() });
+      await auditLog('Criou', 'despesas', `Despesa "${descricao}" (${fmtMoney(valor)}) em ${fmtDateBR(sel.data)}`);
+    });
+  }
+
+  c.appendChild(el(`<div class="section-title">Despesas Lançadas</div>`));
+  const list = [...DB.despesas].sort((a,b)=>b.data.localeCompare(a.data));
+  const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th>Categoria</th><th>Valor</th><th>Lançado por</th><th></th></tr></thead>
+    <tbody>${list.length? list.map(d=>`<tr data-id="${d.id}">
+      <td>${fmtDateBR(d.data)}</td><td>${d.tipo}</td><td>${escapeHtml(d.descricao)}</td><td>${escapeHtml(d.categoria)}</td><td>${fmtMoney(d.valor)}</td><td>${escapeHtml(d.lancadoPor||'')}</td>
+      <td><button class="btn danger small" data-del="${d.id}">Excluir</button></td>
+    </tr>`).join('') : '<tr><td colspan="7" class="empty-state">Nenhuma despesa cadastrada</td></tr>'}</tbody>
+  </table></div></div>`);
+  c.appendChild(tableWrap);
+  tableWrap.querySelectorAll('[data-del]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    if(!confirm('Excluir esta despesa?')) return;
+    const d = DB.despesas.find(x=>x.id===btn.dataset.del);
+    await db.collection('despesas').doc(d.id).delete();
+    await auditLog('Excluiu', 'despesas', `Despesa "${d.descricao}" (${fmtMoney(d.valor)})`);
+  }));
+}
+
+/* ==================== CLIENTES ==================== */
+function renderClientes(c){
+  c.appendChild(el(`<div class="section-title">Novo Cliente</div>`));
+  const form = el(`<div class="frame">
+    <div class="form-grid">
+      <div><label>Nome</label><input type="text" id="f_nome"></div>
+      <div><label>Contato</label><input type="text" id="f_contato" placeholder="Telefone/WhatsApp"></div>
+      <div><label>Observações</label><input type="text" id="f_obs"></div>
+    </div>
+    <button class="btn" id="btnAdd">+ Adicionar Cliente</button>
+  </div>`);
+  c.appendChild(form);
+  form.querySelector('#btnAdd').addEventListener('click', async ()=>{
+    const nome = form.querySelector('#f_nome').value.trim();
+    if(!nome){ alert('Preencha o nome.'); return; }
+    await db.collection('clientes').add({ nome, contato: form.querySelector('#f_contato').value.trim(), obs: form.querySelector('#f_obs').value.trim() });
+    await auditLog('Criou', 'clientes', `Cliente "${nome}"`);
+  });
+
+  c.appendChild(el(`<div class="section-title">Clientes Cadastrados</div>`));
+  const list = [...DB.clientes].sort((a,b)=>a.nome.localeCompare(b.nome));
+  const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Nome</th><th>Contato</th><th>Observações</th><th>Total Comprado</th><th></th></tr></thead>
+    <tbody>${list.length? list.map(cl=>{
+      const total = DB.reservas.filter(r=>r.cliente.toLowerCase()===cl.nome.toLowerCase()).reduce((s,r)=>s+r.qtd*r.precoUnit,0);
+      return `<tr data-id="${cl.id}"><td>${escapeHtml(cl.nome)}</td><td>${escapeHtml(cl.contato)}</td><td>${escapeHtml(cl.obs)}</td><td>${fmtMoney(total)}</td>
+      <td><button class="btn danger small" data-del="${cl.id}">Excluir</button></td></tr>`;
+    }).join('') : '<tr><td colspan="5" class="empty-state">Nenhum cliente cadastrado</td></tr>'}</tbody>
+  </table></div></div>`);
+  c.appendChild(tableWrap);
+  tableWrap.querySelectorAll('[data-del]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    if(!confirm('Excluir este cliente?')) return;
+    const cl = DB.clientes.find(x=>x.id===btn.dataset.del);
+    await db.collection('clientes').doc(cl.id).delete();
+    await auditLog('Excluiu', 'clientes', `Cliente "${cl.nome}"`);
+  }));
+}
+
+/* ==================== AUDITORIA ==================== */
+function renderAuditoria(c){
+  c.appendChild(el(`<div class="section-title">Histórico de Auditoria</div>`));
+  c.appendChild(el(`<div class="small-note" style="margin-bottom:16px;">Registro automático de tudo que é criado, alterado ou excluído no sistema — mostrando quem fez, o quê e quando.</div>`));
+
+  const usuarios = [...new Set(DB.auditoria.map(a=>a.nome))].sort();
+  window._filtroAuditUsuario = window._filtroAuditUsuario || '';
+  const filterWrap = el(`<div class="filters-row">
+    <div><label>Usuário</label><select id="filtUsuario"><option value="">Todos</option>${usuarios.map(u=>`<option ${window._filtroAuditUsuario===u?'selected':''}>${escapeHtml(u)}</option>`).join('')}</select></div>
+  </div>`);
+  c.appendChild(filterWrap);
+  filterWrap.querySelector('#filtUsuario').addEventListener('change', e=>{ window._filtroAuditUsuario = e.target.value; render(); });
+
+  let list = [...DB.auditoria];
+  if(window._filtroAuditUsuario){ list = list.filter(a=>a.nome===window._filtroAuditUsuario); }
+
+  const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Quando</th><th>Usuário</th><th>Ação</th><th>Área</th><th>Detalhes</th></tr></thead>
+    <tbody>${list.length? list.map(a=>`<tr>
+      <td style="white-space:nowrap;">${fmtWhen(a.timestamp)}</td>
+      <td>${escapeHtml(a.nome)}</td>
+      <td><span class="badge acao-${(a.acao||'').toLowerCase()}">${a.acao}</span></td>
+      <td>${escapeHtml(a.colecao)}</td>
+      <td>${escapeHtml(a.resumo)}</td>
+    </tr>`).join('') : '<tr><td colspan="5" class="empty-state">Nenhum registro ainda</td></tr>'}</tbody>
+  </table></div></div>`);
+  c.appendChild(tableWrap);
+}
+</script>
+</body>
+</html>
