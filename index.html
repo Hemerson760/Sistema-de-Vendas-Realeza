@@ -229,6 +229,7 @@ function isAdmin(){ return currentUserRole === 'admin'; }
 
 /* ==================== HELPERS ==================== */
 const fmtMoney = (n) => 'R$ ' + (Number(n)||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+function valorReserva(r){ return (r.valorTotal !== undefined && r.valorTotal !== null) ? Number(r.valorTotal) : valorReserva(r); }
 const fmtDateBR = (iso) => { if(!iso) return ''; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; };
 const monthLabel = (iso) => { const [y,m] = iso.split('-'); const meses=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return meses[parseInt(m,10)-1] + '/' + y; };
 function eventoKey(data,tipo){ return data+'|'+tipo; }
@@ -418,7 +419,7 @@ function render(){
 
 /* ==================== DASHBOARD GERAL ==================== */
 function renderDashboardGeral(c){
-  const totalVendido = DB.reservas.reduce((s,r)=>s+r.qtd*r.precoUnit,0);
+  const totalVendido = DB.reservas.reduce((s,r)=>s+valorReserva(r),0);
   const totalDespesas = DB.despesas.reduce((s,d)=>s+Number(d.valor),0);
   const lucro = totalVendido-totalDespesas;
   const naoPagos = DB.reservas.filter(r=>r.pago==='Não').length;
@@ -437,7 +438,7 @@ function renderDashboardGeral(c){
   const tipos = ['Almoço','Cantina'];
   const compData = tipos.map(t=>({
     tipo:t,
-    receita: DB.reservas.filter(r=>r.tipo===t).reduce((s,r)=>s+r.qtd*r.precoUnit,0),
+    receita: DB.reservas.filter(r=>r.tipo===t).reduce((s,r)=>s+valorReserva(r),0),
     despesa: DB.despesas.filter(d=>d.tipo===t).reduce((s,d)=>s+Number(d.valor),0),
   }));
   const two1 = el(`<div class="two-col"></div>`);
@@ -450,14 +451,14 @@ function renderDashboardGeral(c){
 
   c.appendChild(el(`<div class="section-title">Evolução Mensal</div>`));
   const months = {};
-  DB.reservas.forEach(r=>{ const k=r.data.slice(0,7); months[k]=months[k]||{receita:0,despesa:0}; months[k].receita+=r.qtd*r.precoUnit; });
+  DB.reservas.forEach(r=>{ const k=r.data.slice(0,7); months[k]=months[k]||{receita:0,despesa:0}; months[k].receita+=valorReserva(r); });
   DB.despesas.forEach(d=>{ const k=d.data.slice(0,7); months[k]=months[k]||{receita:0,despesa:0}; months[k].despesa+=Number(d.valor); });
   const monthKeys = Object.keys(months).sort();
   c.appendChild(el(`<div class="frame"><div class="chart-box"><canvas id="chartMensal" height="200"></canvas></div></div>`));
 
   c.appendChild(el(`<div class="section-title">Ranking de Itens Mais Vendidos</div>`));
   const itemAgg = {};
-  DB.reservas.forEach(r=>{ itemAgg[r.item]=itemAgg[r.item]||{qtd:0,valor:0}; itemAgg[r.item].qtd+=r.qtd; itemAgg[r.item].valor+=r.qtd*r.precoUnit; });
+  DB.reservas.forEach(r=>{ itemAgg[r.item]=itemAgg[r.item]||{qtd:0,valor:0}; itemAgg[r.item].qtd+=r.qtd; itemAgg[r.item].valor+=valorReserva(r); });
   const ranking = Object.entries(itemAgg).sort((a,b)=>b[1].qtd-a[1].qtd);
   c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
     <thead><tr><th>#</th><th>Item</th><th>Qtd Vendida</th><th>Valor Total</th></tr></thead>
@@ -505,7 +506,7 @@ function renderDashboardEvento(c){
   const resev = DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo);
   const desev = DB.despesas.filter(d=>d.data===sel.data && d.tipo===sel.tipo);
 
-  const totalVendido = resev.reduce((s,r)=>s+r.qtd*r.precoUnit,0);
+  const totalVendido = resev.reduce((s,r)=>s+valorReserva(r),0);
   const totalDespesa = desev.reduce((s,d)=>s+Number(d.valor),0);
   const lucro = totalVendido-totalDespesa;
   const clientesUnicos = new Set(resev.map(r=>r.cliente.trim().toLowerCase())).size;
@@ -525,7 +526,7 @@ function renderDashboardEvento(c){
   const horarios = [...new Set([...(sel.cultos||[]), ...resev.map(r=>r.horario)])];
   const horData = horarios.map(h=>{
     const rs = resev.filter(r=>r.horario===h);
-    return { h, qtd: rs.reduce((s,r)=>s+r.qtd,0), valor: rs.reduce((s,r)=>s+r.qtd*r.precoUnit,0),
+    return { h, qtd: rs.reduce((s,r)=>s+r.qtd,0), valor: rs.reduce((s,r)=>s+valorReserva(r),0),
       entregues: rs.filter(r=>r.entregue==='Sim').length, pendentes: rs.filter(r=>r.entregue==='Não').length };
   });
   c.appendChild(el(`<div class="section-title">Quebra por Horário de Entrega</div>`));
@@ -538,7 +539,7 @@ function renderDashboardEvento(c){
   c.appendChild(two2);
 
   const itemAgg = {};
-  resev.forEach(r=>{ itemAgg[r.item]=itemAgg[r.item]||{qtd:0,valor:0}; itemAgg[r.item].qtd+=r.qtd; itemAgg[r.item].valor+=r.qtd*r.precoUnit; });
+  resev.forEach(r=>{ itemAgg[r.item]=itemAgg[r.item]||{qtd:0,valor:0}; itemAgg[r.item].qtd+=r.qtd; itemAgg[r.item].valor+=valorReserva(r); });
   const ranking = Object.entries(itemAgg).sort((a,b)=>b[1].qtd-a[1].qtd);
   c.appendChild(el(`<div class="section-title">Itens Vendidos Neste Evento</div>`));
   c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
@@ -550,7 +551,7 @@ function renderDashboardEvento(c){
   const two3 = el(`<div class="two-col"></div>`);
   two3.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
     <thead><tr><th>Falta Pagar</th><th>Item</th><th>Valor</th></tr></thead>
-    <tbody>${naoPagos.length? naoPagos.map(r=>`<tr><td>${escapeHtml(r.cliente)}</td><td>${escapeHtml(r.item)}</td><td>${fmtMoney(r.qtd*r.precoUnit)}</td></tr>`).join('') : '<tr><td colspan="3" class="empty-state">Todo mundo pagou 🎉</td></tr>'}</tbody>
+    <tbody>${naoPagos.length? naoPagos.map(r=>`<tr><td>${escapeHtml(r.cliente)}</td><td>${escapeHtml(r.item)}</td><td>${fmtMoney(valorReserva(r))}</td></tr>`).join('') : '<tr><td colspan="3" class="empty-state">Todo mundo pagou 🎉</td></tr>'}</tbody>
   </table></div></div>`));
   two3.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
     <thead><tr><th>Falta Retirar</th><th>Item</th><th>Horário</th></tr></thead>
@@ -612,12 +613,19 @@ function renderEventos(c){
 }
 
 /* ==================== CARDÁPIO ==================== */
-function precoParaQtd(item, qtd){
+function calcularValorTotal(item, qtd){
   const base = Number(item.preco)||0;
-  const faixas = (item.faixasPreco||[]).slice().sort((a,b)=>a.qtdMinima-b.qtdMinima);
-  let aplicavel = base;
-  for(const f of faixas){ if(qtd >= f.qtdMinima) aplicavel = Number(f.precoUnit); }
-  return aplicavel;
+  const pacotes = (item.faixasPreco||[]).slice().sort((a,b)=>b.qtdBloco-a.qtdBloco); // maior pacote primeiro
+  let restante = Math.max(0, Number(qtd)||0);
+  let total = 0;
+  for(const p of pacotes){
+    if(p.qtdBloco>0 && p.precoBloco>0){
+      const n = Math.floor(restante / p.qtdBloco);
+      if(n>0){ total += n * p.precoBloco; restante -= n * p.qtdBloco; }
+    }
+  }
+  total += restante * base;
+  return total;
 }
 
 function renderCardapio(c){
@@ -632,7 +640,8 @@ function renderCardapio(c){
       <div><label>Ativo</label><select id="f_ativo"><option value="true">Sim</option><option value="false">Não</option></select></div>
     </div>
 
-    <label style="margin-top:4px;">Preço promocional por quantidade (opcional)</label>
+    <label style="margin-top:4px;">Pacotes promocionais (opcional)</label>
+    <div class="small-note" style="margin-top:-4px; margin-bottom:6px;">Ex: "2 unidades por R$36" — a partir da 3ª unidade avulsa, volta a cobrar o preço normal de 1 unidade.</div>
     <div id="faixasList" style="margin-bottom:8px;"></div>
     <button type="button" class="btn secondary small" id="btnAddFaixa">+ Adicionar faixa de quantidade</button>
 
@@ -657,23 +666,26 @@ function renderCardapio(c){
 
   function renderFaixasList(){
     faixasListEl.innerHTML = cardFormState.faixas.map((f,i)=>`
-      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px;">
-        <input type="number" min="2" value="${f.qtdMinima}" data-faixa-qtd="${i}" style="width:130px;" placeholder="A partir de quantas un.">
-        <span class="small-note" style="margin:0;">un → preço unit.</span>
-        <input type="number" step="0.01" value="${f.precoUnit}" data-faixa-preco="${i}" style="width:120px;" placeholder="R$">
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
+        <span class="small-note" style="margin:0;">Comprando</span>
+        <input type="number" min="2" value="${f.qtdBloco}" data-faixa-qtd="${i}" style="width:90px;" placeholder="Qtd">
+        <span class="small-note" style="margin:0;">unidades juntas, custa</span>
+        <input type="number" step="0.01" value="${f.precoBloco}" data-faixa-preco="${i}" style="width:110px;" placeholder="R$ total">
+        <span class="small-note" style="margin:0;">no total</span>
         <button type="button" class="btn danger small" data-faixa-del="${i}">Remover</button>
-      </div>`).join('') || `<div class="small-note">Nenhuma faixa — o item sempre usa o preço de 1 unidade.</div>`;
+      </div>`).join('') || `<div class="small-note">Nenhum pacote — o item sempre usa o preço de 1 unidade.</div>`;
   }
   faixasListEl.addEventListener('input', e=>{
-    if(e.target.dataset.faixaQtd!==undefined){ cardFormState.faixas[e.target.dataset.faixaQtd].qtdMinima = parseFloat(e.target.value)||0; }
-    if(e.target.dataset.faixaPreco!==undefined){ cardFormState.faixas[e.target.dataset.faixaPreco].precoUnit = parseFloat(e.target.value)||0; }
+    if(e.target.dataset.faixaQtd!==undefined){ cardFormState.faixas[e.target.dataset.faixaQtd].qtdBloco = parseFloat(e.target.value)||0; }
+    if(e.target.dataset.faixaPreco!==undefined){ cardFormState.faixas[e.target.dataset.faixaPreco].precoBloco = parseFloat(e.target.value)||0; }
   });
   faixasListEl.addEventListener('click', e=>{
     if(e.target.dataset.faixaDel!==undefined){ cardFormState.faixas.splice(Number(e.target.dataset.faixaDel),1); renderFaixasList(); }
   });
   form.querySelector('#btnAddFaixa').addEventListener('click', ()=>{
-    cardFormState.faixas.push({qtdMinima:2, precoUnit:0}); renderFaixasList();
+    cardFormState.faixas.push({qtdBloco:2, precoBloco:0}); renderFaixasList();
   });
+
 
   function renderOpcoesList(){
     opcoesListEl.innerHTML = cardFormState.opcoes.map((g,i)=>`
@@ -727,8 +739,8 @@ function renderCardapio(c){
     const ativo = form.querySelector('#f_ativo').value==='true';
     if(!item || isNaN(preco)){ alert('Preencha nome do item e preço.'); return; }
     const faixasPreco = cardFormState.faixas
-      .filter(f=>f.qtdMinima>=2 && f.precoUnit>0)
-      .map(f=>({qtdMinima:Number(f.qtdMinima), precoUnit:Number(f.precoUnit)}));
+      .filter(f=>f.qtdBloco>=2 && f.precoBloco>0)
+      .map(f=>({qtdBloco:Number(f.qtdBloco), precoBloco:Number(f.precoBloco)}));
     const temOpcoes = temOpcoesChk.checked;
     const opcoes = temOpcoes ? cardFormState.opcoes
       .filter(g=>g.nome.trim() && g.alternativasRaw.trim())
@@ -750,7 +762,7 @@ function renderCardapio(c){
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
     <thead><tr><th>Item</th><th>Categoria</th><th>Preço</th><th>Faixas de Qtd.</th><th>Opções</th><th>Ativo</th><th></th></tr></thead>
     <tbody>${DB.cardapio.length? DB.cardapio.map(i=>{
-      const faixasTxt = (i.faixasPreco||[]).length ? (i.faixasPreco||[]).slice().sort((a,b)=>a.qtdMinima-b.qtdMinima).map(f=>`${f.qtdMinima}un+: ${fmtMoney(f.precoUnit)}/un`).join(' · ') : '—';
+      const faixasTxt = (i.faixasPreco||[]).length ? (i.faixasPreco||[]).slice().sort((a,b)=>a.qtdBloco-b.qtdBloco).map(f=>`${f.qtdBloco}un por ${fmtMoney(f.precoBloco)}`).join(' · ') : '—';
       const opcoesTxt = i.temOpcoes && (i.opcoes||[]).length ? (i.opcoes||[]).map(o=>o.nome).join(', ') : '—';
       return `<tr data-id="${i.id}">
       <td>${escapeHtml(i.item)}</td><td>${escapeHtml(i.categoria)}</td><td>${fmtMoney(i.preco)}</td>
@@ -861,8 +873,8 @@ function renderReservas(c){
       const item = itemAtual();
       const qtd = parseInt(qtdInput.value,10) || 0;
       if(!item){ precoPreview.textContent=''; return; }
-      const unit = precoParaQtd(item, qtd);
-      precoPreview.textContent = qtd>0 ? `Preço aplicado: ${fmtMoney(unit)} / un — Total: ${fmtMoney(unit*qtd)}` : '';
+      const total = calcularValorTotal(item, qtd);
+      precoPreview.textContent = qtd>0 ? `Total do pedido: ${fmtMoney(total)} (${fmtMoney(qtd?total/qtd:0)} / un em média)` : '';
     }
 
     itemSel.addEventListener('change', ()=>{ refreshOpcoesItem(); refreshPrecoPreview(); });
@@ -887,11 +899,12 @@ function renderReservas(c){
         }
       }
       const opcoesTexto = Object.entries(opcoesSelecionadas).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join('/'):v}`).join('; ');
-      const precoUnit = precoParaQtd(itemObj, qtd);
+      const valorTotal = calcularValorTotal(itemObj, qtd);
+      const precoUnit = qtd ? valorTotal/qtd : 0;
 
       const novaReserva = {
         data: sel.data, tipo: sel.tipo, horario: horSel.value,
-        cliente, item: itemObj.item, qtd, precoUnit,
+        cliente, item: itemObj.item, qtd, precoUnit, valorTotal,
         opcoesSelecionadas, opcoesTexto,
         observacao: form.querySelector('#f_obs').value.trim(),
         formaPagamento: form.querySelector('#f_pagto').value,
@@ -928,7 +941,7 @@ function renderReservas(c){
     <thead><tr><th>Data</th><th>Tipo</th><th>Hor.</th><th>Cliente</th><th>Item</th><th>Qtd</th><th>Valor</th><th>Opções/Obs.</th><th>Pagto</th><th>Pago</th><th>Entregue</th><th>Lançado por</th><th></th></tr></thead>
     <tbody>${list.length? list.map(r=>`<tr data-id="${r.id}" class="${(r.pago==='Não'||r.entregue==='Não')?'pend':''}">
       <td>${fmtDateBR(r.data)}</td><td>${r.tipo}</td><td>${r.horario}</td><td>${escapeHtml(r.cliente)}</td>
-      <td>${escapeHtml(r.item)}</td><td>${r.qtd}</td><td>${fmtMoney(r.qtd*r.precoUnit)}</td>
+      <td>${escapeHtml(r.item)}</td><td>${r.qtd}</td><td>${fmtMoney(valorReserva(r))}</td>
       <td>${r.opcoesTexto?`<span class="obs-flag">${escapeHtml(r.opcoesTexto)}</span><br>`:''}${r.observacao?`<span class="obs-flag">${escapeHtml(r.observacao)}</span>`:''}</td>
       <td>${r.formaPagamento}</td>
       <td><span class="badge ${r.pago==='Sim'?'sim':'nao'}">${r.pago}</span></td>
@@ -937,11 +950,29 @@ function renderReservas(c){
       <td style="white-space:nowrap;">
         <button class="btn secondary small" data-pago="${r.id}">${r.pago==='Sim'?'Marcar Não Pago':'Marcar Pago'}</button>
         <button class="btn secondary small" data-ent="${r.id}">${r.entregue==='Sim'?'Desfazer Entrega':'Marcar Entregue'}</button>
+        ${isAdmin() ? `<button class="btn secondary small" data-editval="${r.id}">Editar Valor</button>` : ''}
         <button class="btn danger small" data-del="${r.id}">Excluir</button>
       </td>
     </tr>`).join('') : '<tr><td colspan="13" class="empty-state">Nenhum pedido encontrado</td></tr>'}</tbody>
   </table></div></div>`);
   c.appendChild(tableWrap);
+
+  tableWrap.querySelectorAll('[data-editval]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const r = DB.reservas.find(x=>x.id===btn.dataset.editval);
+    const novaQtdStr = prompt('Quantidade:', r.qtd);
+    if(novaQtdStr===null) return;
+    const novaQtd = parseInt(novaQtdStr,10);
+    if(!novaQtd || novaQtd<1){ alert('Quantidade inválida.'); return; }
+    const novoValorStr = prompt('Valor total do pedido (R$):', valorReserva(r).toFixed(2));
+    if(novoValorStr===null) return;
+    const novoValor = parseFloat(novoValorStr.replace(',','.'));
+    if(isNaN(novoValor) || novoValor<0){ alert('Valor inválido.'); return; }
+    const valorAntigo = valorReserva(r);
+    const qtdAntiga = r.qtd;
+    const precoUnit = novaQtd ? novoValor/novaQtd : 0;
+    await db.collection('reservas').doc(r.id).update({qtd:novaQtd, valorTotal:novoValor, precoUnit});
+    await auditLog('Atualizou', 'reservas', `Valor do pedido de ${r.cliente} (${r.item}) editado: ${qtdAntiga}x/${fmtMoney(valorAntigo)} → ${novaQtd}x/${fmtMoney(novoValor)}`);
+  }));
 
   tableWrap.querySelectorAll('[data-pago]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const r = DB.reservas.find(x=>x.id===btn.dataset.pago);
@@ -959,7 +990,7 @@ function renderReservas(c){
     if(!confirm('Excluir este pedido?')) return;
     const r = DB.reservas.find(x=>x.id===btn.dataset.del);
     await db.collection('reservas').doc(r.id).delete();
-    await auditLog('Excluiu', 'reservas', `Pedido de ${r.cliente} — ${r.item} (${fmtMoney(r.qtd*r.precoUnit)}, pago: ${r.pago})`);
+    await auditLog('Excluiu', 'reservas', `Pedido de ${r.cliente} — ${r.item} (${fmtMoney(valorReserva(r))}, pago: ${r.pago})`);
   }));
 }
 
@@ -1033,7 +1064,7 @@ function renderClientes(c){
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
     <thead><tr><th>Nome</th><th>Contato</th><th>Observações</th><th>Total Comprado</th><th></th></tr></thead>
     <tbody>${list.length? list.map(cl=>{
-      const total = DB.reservas.filter(r=>r.cliente.toLowerCase()===cl.nome.toLowerCase()).reduce((s,r)=>s+r.qtd*r.precoUnit,0);
+      const total = DB.reservas.filter(r=>r.cliente.toLowerCase()===cl.nome.toLowerCase()).reduce((s,r)=>s+valorReserva(r),0);
       return `<tr data-id="${cl.id}"><td>${escapeHtml(cl.nome)}</td><td>${escapeHtml(cl.contato)}</td><td>${escapeHtml(cl.obs)}</td><td>${fmtMoney(total)}</td>
       <td><button class="btn danger small" data-del="${cl.id}">Excluir</button></td></tr>`;
     }).join('') : '<tr><td colspan="5" class="empty-state">Nenhum cliente cadastrado</td></tr>'}</tbody>
