@@ -613,9 +613,17 @@ function renderEventos(c){
 }
 
 /* ==================== CARDÁPIO ==================== */
+function normalizarPacotes(faixasPreco){
+  // Compatibilidade com itens salvos antes do ajuste de "pacote fechado"
+  return (faixasPreco||[]).map(f=>({
+    qtdBloco: Number(f.qtdBloco ?? f.qtdMinima ?? 0),
+    precoBloco: Number(f.precoBloco ?? f.precoUnit ?? 0),
+  })).filter(f=>f.qtdBloco>=2 && f.precoBloco>0);
+}
+
 function calcularValorTotal(item, qtd){
   const base = Number(item.preco)||0;
-  const pacotes = (item.faixasPreco||[]).slice().sort((a,b)=>b.qtdBloco-a.qtdBloco); // maior pacote primeiro
+  const pacotes = normalizarPacotes(item.faixasPreco).sort((a,b)=>b.qtdBloco-a.qtdBloco); // maior pacote primeiro
   let restante = Math.max(0, Number(qtd)||0);
   let total = 0;
   for(const p of pacotes){
@@ -762,7 +770,8 @@ function renderCardapio(c){
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
     <thead><tr><th>Item</th><th>Categoria</th><th>Preço</th><th>Faixas de Qtd.</th><th>Opções</th><th>Ativo</th><th></th></tr></thead>
     <tbody>${DB.cardapio.length? DB.cardapio.map(i=>{
-      const faixasTxt = (i.faixasPreco||[]).length ? (i.faixasPreco||[]).slice().sort((a,b)=>a.qtdBloco-b.qtdBloco).map(f=>`${f.qtdBloco}un por ${fmtMoney(f.precoBloco)}`).join(' · ') : '—';
+      const faixasNorm = normalizarPacotes(i.faixasPreco);
+      const faixasTxt = faixasNorm.length ? faixasNorm.slice().sort((a,b)=>a.qtdBloco-b.qtdBloco).map(f=>`${f.qtdBloco}un por ${fmtMoney(f.precoBloco)}`).join(' · ') : '—';
       const opcoesTxt = i.temOpcoes && (i.opcoes||[]).length ? (i.opcoes||[]).map(o=>o.nome).join(', ') : '—';
       return `<tr data-id="${i.id}">
       <td>${escapeHtml(i.item)}</td><td>${escapeHtml(i.categoria)}</td><td>${fmtMoney(i.preco)}</td>
@@ -784,7 +793,7 @@ function renderCardapio(c){
       form.querySelector('#f_cat').value = i.categoria||'';
       form.querySelector('#f_preco').value = i.preco;
       form.querySelector('#f_ativo').value = i.ativo ? 'true' : 'false';
-      cardFormState.faixas = (i.faixasPreco||[]).map(f=>({...f}));
+      cardFormState.faixas = normalizarPacotes(i.faixasPreco);
       cardFormState.opcoes = (i.opcoes||[]).map(o=>({nome:o.nome, tipo:o.tipo, alternativasRaw:(o.alternativas||[]).join(', ')}));
       cardFormState.editingId = i.id;
       temOpcoesChk.checked = !!i.temOpcoes;
