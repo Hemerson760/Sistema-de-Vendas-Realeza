@@ -229,7 +229,7 @@ function isAdmin(){ return currentUserRole === 'admin'; }
 
 /* ==================== HELPERS ==================== */
 const fmtMoney = (n) => 'R$ ' + (Number(n)||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
-function valorReserva(r){ return (r.valorTotal !== undefined && r.valorTotal !== null) ? Number(r.valorTotal) : valorReserva(r); }
+function valorReserva(r){ return (r.valorTotal !== undefined && r.valorTotal !== null) ? Number(r.valorTotal) : (Number(r.qtd)||0)*(Number(r.precoUnit)||0); }
 const fmtDateBR = (iso) => { if(!iso) return ''; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; };
 const monthLabel = (iso) => { const [y,m] = iso.split('-'); const meses=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return meses[parseInt(m,10)-1] + '/' + y; };
 function eventoKey(data,tipo){ return data+'|'+tipo; }
