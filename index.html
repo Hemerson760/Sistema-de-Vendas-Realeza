@@ -224,8 +224,10 @@ let currentTab = 'dashboard';
 let charts = {};
 let currentUser = null;
 let currentUserRole = 'equipe'; // 'admin' ou 'equipe'
+let currentUserPermissoes = {}; // { eventos: bool, cardapio: bool }
 let listenersStarted = false;
 function isAdmin(){ return currentUserRole === 'admin'; }
+function podeEditar(area){ return isAdmin() || !!currentUserPermissoes[area]; }
 
 /* ==================== HELPERS ==================== */
 const fmtMoney = (n) => 'R$ ' + (Number(n)||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
@@ -242,6 +244,50 @@ function el(html){ const t=document.createElement('template'); t.innerHTML=html.
 function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 function fmtWhen(ts){ if(!ts || !ts.toDate) return '—'; const d = ts.toDate(); return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
 function userName(){ return (currentUser && (currentUser.displayName || currentUser.email)) || 'Desconhecido'; }
+function whatsappUrl(contato){
+  const d = (contato||'').replace(/\D/g,'');
+  if(!d) return null;
+  const comDDI = d.length<=11 ? '55'+d : d; // assume Brasil se não tiver DDI
+  return `https://wa.me/${comDDI}`;
+}
+function whatsappBtn(contato, extraStyle){
+  const url = whatsappUrl(contato);
+  if(!url) return '';
+  return `<a href="${url}" target="_blank" rel="noopener" title="Chamar no WhatsApp" style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; background:#25D366; vertical-align:middle; margin-left:6px; ${extraStyle||''}">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+  </a>`;
+}
+function contatoDoCliente(nomeCliente){
+  const cl = DB.clientes.find(x=>x.nome.toLowerCase()===String(nomeCliente||'').toLowerCase());
+  return cl ? cl.contato : '';
+}
+
+function normalizarNome(s){ return (s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim(); }
+function levenshtein(a,b){
+  const m=a.length, n=b.length;
+  const dp = Array.from({length:m+1},()=>new Array(n+1).fill(0));
+  for(let i=0;i<=m;i++) dp[i][0]=i;
+  for(let j=0;j<=n;j++) dp[0][j]=j;
+  for(let i=1;i<=m;i++){
+    for(let j=1;j<=n;j++){
+      dp[i][j] = a[i-1]===b[j-1] ? dp[i-1][j-1] : 1+Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+    }
+  }
+  return dp[m][n];
+}
+function encontrarClienteSimilar(nome){
+  const alvo = normalizarNome(nome);
+  if(!alvo) return null;
+  let melhor = null, melhorDist = Infinity;
+  DB.clientes.forEach(cl=>{
+    const cand = normalizarNome(cl.nome);
+    if(!cand || cand===alvo) return; // vazio ou idêntico não conta como "similar"
+    const dist = levenshtein(alvo, cand);
+    const limiar = Math.max(2, Math.floor(Math.max(alvo.length,cand.length)*0.2));
+    if(dist<=limiar && dist<melhorDist){ melhor=cl; melhorDist=dist; }
+  });
+  return melhor;
+}
 
 /* ==================== AUDITORIA ==================== */
 async function auditLog(acao, colecao, resumo){
@@ -315,10 +361,14 @@ auth.onAuthStateChanged(async user=>{
     // Verifica se este e-mail está na lista de autorizados (coleção "equipe")
     let autorizado = false;
     let papel = 'equipe';
+    let permissoes = {};
     try{
       const doc = await db.collection('equipe').doc(user.email.toLowerCase()).get();
       autorizado = doc.exists;
-      if(autorizado){ papel = (doc.data().papel === 'admin') ? 'admin' : 'equipe'; }
+      if(autorizado){
+        papel = (doc.data().papel === 'admin') ? 'admin' : 'equipe';
+        permissoes = doc.data().permissoes || {};
+      }
     }catch(e){
       console.error('Erro ao checar autorização', e);
     }
@@ -332,6 +382,7 @@ auth.onAuthStateChanged(async user=>{
     }
     currentUser = user;
     currentUserRole = papel;
+    currentUserPermissoes = permissoes;
     document.getElementById('loginScreen').style.display = 'none';
     document.getElementById('app').style.display = 'block';
     document.getElementById('userBadge').innerHTML =
@@ -418,18 +469,26 @@ function render(){
 }
 
 /* ==================== DASHBOARD GERAL ==================== */
+function margemPct(receita, despesa){ const lucro=receita-despesa; return receita>0 ? (lucro/receita*100) : 0; }
+function roiPct(receita, despesa){ return despesa>0 ? ((receita-despesa)/despesa*100) : (receita>0?100:0); }
+function fmtPct(n){ return (Number(n)||0).toLocaleString('pt-BR',{maximumFractionDigits:1, minimumFractionDigits:0})+'%'; }
+
 function renderDashboardGeral(c){
   const totalVendido = DB.reservas.reduce((s,r)=>s+valorReserva(r),0);
   const totalDespesas = DB.despesas.reduce((s,d)=>s+Number(d.valor),0);
   const lucro = totalVendido-totalDespesas;
+  const qtdTotal = DB.reservas.reduce((s,r)=>s+r.qtd,0);
   const naoPagos = DB.reservas.filter(r=>r.pago==='Não').length;
   const naoEntregues = DB.reservas.filter(r=>r.entregue==='Não').length;
 
   c.appendChild(el(`<div class="section-title">Resumo Global</div>`));
   c.appendChild(el(`<div class="frame"><div class="kpi-grid">
     <div class="kpi ok"><div class="label">Total Vendido</div><div class="value">${fmtMoney(totalVendido)}</div></div>
+    <div class="kpi"><div class="label">Qtd. Total Vendida</div><div class="value">${qtdTotal}</div></div>
     <div class="kpi"><div class="label">Total Despesas</div><div class="value">${fmtMoney(totalDespesas)}</div></div>
     <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Lucro Total</div><div class="value">${fmtMoney(lucro)}</div></div>
+    <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Margem de Lucro</div><div class="value">${fmtPct(margemPct(totalVendido,totalDespesas))}</div></div>
+    <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Retorno s/ Investido</div><div class="value">${fmtPct(roiPct(totalVendido,totalDespesas))}</div></div>
     <div class="kpi ${naoPagos>0?'warn':''}"><div class="label">Pedidos Não Pagos</div><div class="value">${naoPagos}</div></div>
     <div class="kpi ${naoEntregues>0?'warn':''}"><div class="label">Não Entregues</div><div class="value">${naoEntregues}</div></div>
   </div></div>`));
@@ -444,8 +503,8 @@ function renderDashboardGeral(c){
   const two1 = el(`<div class="two-col"></div>`);
   two1.appendChild(el(`<div class="chart-box"><canvas id="chartTipo" height="220"></canvas></div>`));
   two1.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
-    <thead><tr><th>Tipo</th><th>Receita</th><th>Despesa</th><th>Lucro</th></tr></thead>
-    <tbody>${compData.map(x=>`<tr><td>${x.tipo}</td><td>${fmtMoney(x.receita)}</td><td>${fmtMoney(x.despesa)}</td><td>${fmtMoney(x.receita-x.despesa)}</td></tr>`).join('')}</tbody>
+    <thead><tr><th>Tipo</th><th>Receita</th><th>Despesa</th><th>Lucro</th><th>Margem</th></tr></thead>
+    <tbody>${compData.map(x=>`<tr><td>${x.tipo}</td><td>${fmtMoney(x.receita)}</td><td>${fmtMoney(x.despesa)}</td><td>${fmtMoney(x.receita-x.despesa)}</td><td>${fmtPct(margemPct(x.receita,x.despesa))}</td></tr>`).join('')}</tbody>
   </table></div></div>`));
   c.appendChild(two1);
 
@@ -456,32 +515,60 @@ function renderDashboardGeral(c){
   const monthKeys = Object.keys(months).sort();
   c.appendChild(el(`<div class="frame"><div class="chart-box"><canvas id="chartMensal" height="200"></canvas></div></div>`));
 
+  c.appendChild(el(`<div class="section-title">Comparativo entre Eventos — Qual Cantina/Almoço Repetir</div>`));
+  c.appendChild(el(`<div class="small-note" style="margin-bottom:12px;">Ordenado do mais lucrativo pro menos lucrativo — use pra decidir o que vale a pena repetir.</div>`));
+  const eventoStats = DB.eventos.map(e=>{
+    const resev = DB.reservas.filter(r=>r.data===e.data && r.tipo===e.tipo);
+    const desev = DB.despesas.filter(d=>d.data===e.data && d.tipo===e.tipo);
+    const receita = resev.reduce((s,r)=>s+valorReserva(r),0);
+    const despesa = desev.reduce((s,d)=>s+Number(d.valor),0);
+    const qtd = resev.reduce((s,r)=>s+r.qtd,0);
+    return { label: `${fmtDateBR(e.data)} — ${e.tipo}`, data:e.data, tipo:e.tipo, receita, despesa, qtd, lucro:receita-despesa, margem: margemPct(receita,despesa) };
+  }).sort((a,b)=>b.lucro-a.lucro);
+  const two4 = el(`<div class="two-col"></div>`);
+  two4.appendChild(el(`<div class="chart-box"><canvas id="chartEventos" height="${Math.max(220, eventoStats.length*36)}"></canvas></div>`));
+  two4.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Evento</th><th>Qtd</th><th>Receita</th><th>Despesa</th><th>Lucro</th><th>Margem</th></tr></thead>
+    <tbody>${eventoStats.length? eventoStats.map(e=>`<tr><td>${e.label}</td><td>${e.qtd}</td><td>${fmtMoney(e.receita)}</td><td>${fmtMoney(e.despesa)}</td><td style="color:${e.lucro>=0?'var(--ok)':'var(--warn)'}">${fmtMoney(e.lucro)}</td><td>${fmtPct(e.margem)}</td></tr>`).join('') : '<tr><td colspan="6" class="empty-state">Nenhum evento cadastrado</td></tr>'}</tbody>
+  </table></div></div>`));
+  c.appendChild(two4);
+
   c.appendChild(el(`<div class="section-title">Ranking de Itens Mais Vendidos</div>`));
   const itemAgg = {};
   DB.reservas.forEach(r=>{ itemAgg[r.item]=itemAgg[r.item]||{qtd:0,valor:0}; itemAgg[r.item].qtd+=r.qtd; itemAgg[r.item].valor+=valorReserva(r); });
   const ranking = Object.entries(itemAgg).sort((a,b)=>b[1].qtd-a[1].qtd);
   c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
-    <thead><tr><th>#</th><th>Item</th><th>Qtd Vendida</th><th>Valor Total</th></tr></thead>
-    <tbody>${ranking.length? ranking.map((r,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(r[0])}</td><td>${r[1].qtd}</td><td>${fmtMoney(r[1].valor)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty-state">Sem vendas registradas ainda</td></tr>'}</tbody>
+    <thead><tr><th>#</th><th>Item</th><th>Qtd Vendida</th><th>Valor Total</th><th>% da Receita</th></tr></thead>
+    <tbody>${ranking.length? ranking.map((r,i)=>`<tr><td>${i+1}</td><td>${escapeHtml(r[0])}</td><td>${r[1].qtd}</td><td>${fmtMoney(r[1].valor)}</td><td>${fmtPct(totalVendido? r[1].valor/totalVendido*100 : 0)}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-state">Sem vendas registradas ainda</td></tr>'}</tbody>
   </table></div></div>`));
 
   if(charts.tipo) charts.tipo.destroy();
   charts.tipo = new Chart(document.getElementById('chartTipo'), {
     type:'bar',
     data:{ labels: compData.map(x=>x.tipo), datasets:[
-      {label:'Receita', data: compData.map(x=>x.receita), backgroundColor:'#A9822F'},
-      {label:'Despesa', data: compData.map(x=>x.despesa), backgroundColor:'#C08B6E'},
+      {label:'Receita', data: compData.map(x=>x.receita), backgroundColor:'#A9822F', borderRadius:4},
+      {label:'Despesa', data: compData.map(x=>x.despesa), backgroundColor:'#C08B6E', borderRadius:4},
+      {label:'Lucro', data: compData.map(x=>x.receita-x.despesa), backgroundColor:'#5C7A4B', borderRadius:4},
     ]},
     options:{ responsive:true, plugins:{legend:{position:'bottom'}} }
   });
   if(charts.mensal) charts.mensal.destroy();
   charts.mensal = new Chart(document.getElementById('chartMensal'), {
-    type:'line',
+    type:'bar',
     data:{ labels: monthKeys.map(k=>monthLabel(k+'-01')), datasets:[
-      {label:'Receita', data: monthKeys.map(k=>months[k].receita), borderColor:'#A9822F', backgroundColor:'#E4D6AE66', tension:.3, fill:true},
-      {label:'Despesa', data: monthKeys.map(k=>months[k].despesa), borderColor:'#A5493A', backgroundColor:'#A5493A18', tension:.3, fill:true},
+      {type:'bar', label:'Receita', data: monthKeys.map(k=>months[k].receita), backgroundColor:'#E4D6AE', borderRadius:4, order:2},
+      {type:'bar', label:'Despesa', data: monthKeys.map(k=>months[k].despesa), backgroundColor:'#E9CFC2', borderRadius:4, order:2},
+      {type:'line', label:'Lucro', data: monthKeys.map(k=>months[k].receita-months[k].despesa), borderColor:'#5C7A4B', backgroundColor:'#5C7A4B', tension:.3, order:1, yAxisID:'y'},
     ]},
     options:{ responsive:true, plugins:{legend:{position:'bottom'}} }
+  });
+  if(charts.eventos) charts.eventos.destroy();
+  charts.eventos = new Chart(document.getElementById('chartEventos'), {
+    type:'bar',
+    data:{ labels: eventoStats.map(e=>e.label), datasets:[
+      {label:'Lucro', data: eventoStats.map(e=>e.lucro), backgroundColor: eventoStats.map(e=>e.lucro>=0?'#A9822F':'#A5493A'), borderRadius:4},
+    ]},
+    options:{ indexAxis:'y', responsive:true, plugins:{legend:{display:false}} }
   });
 }
 
@@ -509,6 +596,7 @@ function renderDashboardEvento(c){
   const totalVendido = resev.reduce((s,r)=>s+valorReserva(r),0);
   const totalDespesa = desev.reduce((s,d)=>s+Number(d.valor),0);
   const lucro = totalVendido-totalDespesa;
+  const qtdVendidaTotal = resev.reduce((s,r)=>s+r.qtd,0);
   const clientesUnicos = new Set(resev.map(r=>r.cliente.trim().toLowerCase())).size;
   const naoPagos = resev.filter(r=>r.pago==='Não');
   const naoEntregues = resev.filter(r=>r.entregue==='Não');
@@ -516,8 +604,11 @@ function renderDashboardEvento(c){
   c.appendChild(el(`<div class="section-title">Resumo do Dia — ${sel.label}</div>`));
   c.appendChild(el(`<div class="frame"><div class="kpi-grid">
     <div class="kpi ok"><div class="label">Total Vendido</div><div class="value">${fmtMoney(totalVendido)}</div></div>
+    <div class="kpi"><div class="label">Qtd. Vendida</div><div class="value">${qtdVendidaTotal}</div></div>
     <div class="kpi"><div class="label">Despesas</div><div class="value">${fmtMoney(totalDespesa)}</div></div>
     <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Lucro do Dia</div><div class="value">${fmtMoney(lucro)}</div></div>
+    <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Margem de Lucro</div><div class="value">${fmtPct(margemPct(totalVendido,totalDespesa))}</div></div>
+    <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Retorno s/ Investido</div><div class="value">${fmtPct(roiPct(totalVendido,totalDespesa))}</div></div>
     <div class="kpi"><div class="label">Clientes Únicos</div><div class="value">${clientesUnicos}</div></div>
     <div class="kpi ${naoPagos.length?'warn':''}"><div class="label">Não Pagos</div><div class="value">${naoPagos.length}</div></div>
     <div class="kpi ${naoEntregues.length?'warn':''}"><div class="label">Não Entregues</div><div class="value">${naoEntregues.length}</div></div>
@@ -543,9 +634,39 @@ function renderDashboardEvento(c){
   const ranking = Object.entries(itemAgg).sort((a,b)=>b[1].qtd-a[1].qtd);
   c.appendChild(el(`<div class="section-title">Itens Vendidos Neste Evento</div>`));
   c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
-    <thead><tr><th>Item</th><th>Qtd</th><th>Valor</th></tr></thead>
-    <tbody>${ranking.length? ranking.map(r=>`<tr><td>${escapeHtml(r[0])}</td><td>${r[1].qtd}</td><td>${fmtMoney(r[1].valor)}</td></tr>`).join('') : '<tr><td colspan="3" class="empty-state">Sem pedidos neste evento ainda</td></tr>'}</tbody>
+    <thead><tr><th>Item</th><th>Qtd</th><th>Valor</th><th>% do Total</th></tr></thead>
+    <tbody>${ranking.length? ranking.map(r=>`<tr><td>${escapeHtml(r[0])}</td><td>${r[1].qtd}</td><td>${fmtMoney(r[1].valor)}</td><td>${fmtPct(totalVendido? r[1].valor/totalVendido*100:0)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty-state">Sem pedidos neste evento ainda</td></tr>'}</tbody>
   </table></div></div>`));
+
+  const itensComLimite = DB.cardapio.filter(i=>i.limite!==null && i.limite!==undefined && i.limite>0);
+  if(itensComLimite.length){
+    const somaLimites = itensComLimite.reduce((s,i)=>s+i.limite,0);
+    const custoPorUnidade = somaLimites>0 ? totalDespesa/somaLimites : 0;
+    let prejuizoTotal = 0;
+    const linhas = itensComLimite.map(i=>{
+      const vendido = (itemAgg[i.item]?.qtd)||0;
+      const sobra = Math.max(0, i.limite - vendido);
+      const pct = Math.min(100, i.limite? (vendido/i.limite*100) : 0);
+      const prejuizo = sobra * custoPorUnidade;
+      prejuizoTotal += prejuizo;
+      const excedeu = vendido > i.limite;
+      return `<tr class="${excedeu?'pend':''}">
+        <td>${escapeHtml(i.item)}</td>
+        <td>${i.limite}</td>
+        <td>${vendido}</td>
+        <td>${excedeu?`<span class="badge nao">excedeu em ${vendido-i.limite}</span>`:sobra}</td>
+        <td style="min-width:110px;"><div style="background:#EDE3CB;border-radius:4px;overflow:hidden;height:9px;width:100%;"><div style="background:${excedeu?'var(--warn)':'var(--gold)'};height:100%;width:${pct}%;"></div></div><span class="small-note" style="margin:2px 0 0;">${fmtPct(pct)}</span></td>
+        <td>${sobra>0? fmtMoney(prejuizo) : '—'}</td>
+      </tr>`;
+    }).join('');
+    c.appendChild(el(`<div class="section-title">Limites de Produção</div>`));
+    c.appendChild(el(`<div class="small-note" style="margin-bottom:10px;">"Prejuízo estimado" = custo médio por unidade (despesa do evento dividida pela capacidade total) × unidades que sobraram. É uma estimativa, já que o sistema não rastreia custo por item individualmente.</div>`));
+    c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+      <thead><tr><th>Item</th><th>Produzido</th><th>Vendido</th><th>Sobra</th><th>% Vendido</th><th>Prejuízo Estimado</th></tr></thead>
+      <tbody>${linhas}</tbody>
+      ${prejuizoTotal>0?`<tfoot><tr style="font-weight:600;"><td colspan="5" style="text-align:right; padding:9px 10px;">Prejuízo total estimado por sobra:</td><td style="padding:9px 10px; color:var(--warn);">${fmtMoney(prejuizoTotal)}</td></tr></tfoot>`:''}
+    </table></div></div>`));
+  }
 
   c.appendChild(el(`<div class="section-title">Pendências — Quem Falta Pagar / Retirar</div>`));
   const two3 = el(`<div class="two-col"></div>`);
@@ -562,43 +683,48 @@ function renderDashboardEvento(c){
   if(charts.horario) charts.horario.destroy();
   charts.horario = new Chart(document.getElementById('chartHorario'), {
     type:'bar',
-    data:{ labels: horData.map(x=>x.h), datasets:[{label:'Valor Vendido (R$)', data: horData.map(x=>x.valor), backgroundColor:'#A9822F'}] },
+    data:{ labels: horData.map(x=>x.h), datasets:[{label:'Valor Vendido (R$)', data: horData.map(x=>x.valor), backgroundColor:'#A9822F', borderRadius:4}] },
     options:{ responsive:true, plugins:{legend:{display:false}} }
   });
 }
 
 /* ==================== EVENTOS ==================== */
 function renderEventos(c){
-  c.appendChild(el(`<div class="section-title">Novo Evento</div>`));
-  const form = el(`<div class="frame">
-    <div class="form-grid">
-      <div><label>Data</label><input type="date" id="f_data"></div>
-      <div><label>Tipo</label><select id="f_tipo"><option>Almoço</option><option>Cantina</option><option>Outro</option></select></div>
-      <div><label>Cultos (ex: 17h,19h)</label><input type="text" id="f_cultos" placeholder="17h,19h"></div>
-      <div><label>Status</label><select id="f_status"><option>Aberto</option><option>Encerrado</option></select></div>
-    </div>
-    <button class="btn" id="btnAdd">+ Adicionar Evento</button>
-  </div>`);
-  c.appendChild(form);
-  form.querySelector('#btnAdd').addEventListener('click', async ()=>{
-    const data = form.querySelector('#f_data').value;
-    const tipo = form.querySelector('#f_tipo').value;
-    const cultosRaw = form.querySelector('#f_cultos').value;
-    const status = form.querySelector('#f_status').value;
-    if(!data || !cultosRaw.trim()){ alert('Preencha data e cultos.'); return; }
-    const cultos = cultosRaw.split(',').map(s=>s.trim()).filter(Boolean);
-    await db.collection('eventos').add({ data, tipo, cultos, status });
-    await auditLog('Criou', 'eventos', `Evento ${fmtDateBR(data)} — ${tipo}`);
-  });
+  const podeMexer = podeEditar('eventos');
+  if(podeMexer){
+    c.appendChild(el(`<div class="section-title">Novo Evento</div>`));
+    const form = el(`<div class="frame">
+      <div class="form-grid">
+        <div><label>Data</label><input type="date" id="f_data"></div>
+        <div><label>Tipo</label><select id="f_tipo"><option>Almoço</option><option>Cantina</option><option>Outro</option></select></div>
+        <div><label>Cultos (ex: 17h,19h)</label><input type="text" id="f_cultos" placeholder="17h,19h"></div>
+        <div><label>Status</label><select id="f_status"><option>Aberto</option><option>Encerrado</option></select></div>
+      </div>
+      <button class="btn" id="btnAdd">+ Adicionar Evento</button>
+    </div>`);
+    c.appendChild(form);
+    form.querySelector('#btnAdd').addEventListener('click', async ()=>{
+      const data = form.querySelector('#f_data').value;
+      const tipo = form.querySelector('#f_tipo').value;
+      const cultosRaw = form.querySelector('#f_cultos').value;
+      const status = form.querySelector('#f_status').value;
+      if(!data || !cultosRaw.trim()){ alert('Preencha data e cultos.'); return; }
+      const cultos = cultosRaw.split(',').map(s=>s.trim()).filter(Boolean);
+      await db.collection('eventos').add({ data, tipo, cultos, status });
+      await auditLog('Criou', 'eventos', `Evento ${fmtDateBR(data)} — ${tipo}`);
+    });
+  } else {
+    c.appendChild(el(`<div class="small-note" style="margin-bottom:16px;">Você tem acesso apenas para consulta nesta aba. Fale com um administrador se precisar cadastrar ou alterar eventos.</div>`));
+  }
 
   c.appendChild(el(`<div class="section-title">Eventos Cadastrados</div>`));
   const list = [...DB.eventos].sort((a,b)=>b.data.localeCompare(a.data));
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
-    <thead><tr><th>Data</th><th>Tipo</th><th>Cultos</th><th>Status</th><th></th></tr></thead>
+    <thead><tr><th>Data</th><th>Tipo</th><th>Cultos</th><th>Status</th>${podeMexer?'<th></th>':''}</tr></thead>
     <tbody>${list.length? list.map(e=>`<tr data-id="${e.id}">
       <td>${fmtDateBR(e.data)}</td><td>${e.tipo}</td><td>${(e.cultos||[]).join(', ')}</td>
       <td><span class="badge ${e.status==='Aberto'?'sim':'nao'}">${e.status}</span></td>
-      <td><button class="btn danger small" data-del="${e.id}">Excluir</button></td>
+      ${podeMexer?`<td><button class="btn danger small" data-del="${e.id}">Excluir</button></td>`:''}
     </tr>`).join('') : '<tr><td colspan="5" class="empty-state">Nenhum evento cadastrado</td></tr>'}</tbody>
   </table></div></div>`);
   c.appendChild(tableWrap);
@@ -635,18 +761,39 @@ function calcularValorTotal(item, qtd){
   total += restante * base;
   return total;
 }
+function calcularValorTotalDetalhado(item, qtd){
+  const base = Number(item.preco)||0;
+  const pacotes = normalizarPacotes(item.faixasPreco).sort((a,b)=>b.qtdBloco-a.qtdBloco);
+  let restante = Math.max(0, Number(qtd)||0);
+  let total = 0;
+  const partes = [];
+  for(const p of pacotes){
+    if(p.qtdBloco>0 && p.precoBloco>0){
+      const n = Math.floor(restante / p.qtdBloco);
+      if(n>0){ total += n * p.precoBloco; restante -= n * p.qtdBloco; partes.push(`${n}x pacote de ${p.qtdBloco}un (${fmtMoney(p.precoBloco)} cada) = ${fmtMoney(n*p.precoBloco)}`); }
+    }
+  }
+  if(restante>0){ total += restante * base; partes.push(`${restante}un avulsa${restante>1?'s':''} a ${fmtMoney(base)} = ${fmtMoney(restante*base)}`); }
+  return { total, texto: partes.join(' + ') };
+}
 
 function renderCardapio(c){
+  const podeMexer = podeEditar('cardapio');
   const cardFormState = { faixas: [], opcoes: [], editingId: null };
 
-  c.appendChild(el(`<div class="section-title">Novo Item</div>`));
-  const form = el(`<div class="frame">
+  if(!podeMexer){
+    c.appendChild(el(`<div class="small-note" style="margin-bottom:16px;">Você tem acesso apenas para consulta nesta aba. Fale com um administrador se precisar cadastrar ou alterar itens do cardápio.</div>`));
+  }
+  c.appendChild(el(`<div class="section-title" style="${podeMexer?'':'display:none;'}">Novo Item</div>`));
+  const form = el(`<div class="frame" style="${podeMexer?'':'display:none;'}">
     <div class="form-grid">
       <div><label>Item</label><input type="text" id="f_item" placeholder="Ex: Pastel de Carne"></div>
       <div><label>Categoria</label><input type="text" id="f_cat" placeholder="Ex: Salgado"></div>
       <div><label>Preço 1 unidade (R$)</label><input type="number" step="0.01" id="f_preco"></div>
       <div><label>Ativo</label><select id="f_ativo"><option value="true">Sim</option><option value="false">Não</option></select></div>
+      <div><label>Limite por evento (opcional)</label><input type="number" min="0" id="f_limite" placeholder="Ex: 100"></div>
     </div>
+    <div class="small-note" style="margin-top:-10px; margin-bottom:6px;">Se preenchido, o sistema avisa quando a quantidade reservada desse item, num mesmo evento, se aproxima ou ultrapassa esse número. Deixe em branco para não limitar.</div>
 
     <label style="margin-top:4px;">Pacotes promocionais (opcional)</label>
     <div class="small-note" style="margin-top:-4px; margin-bottom:6px;">Ex: "2 unidades por R$36" — a partir da 3ª unidade avulsa, volta a cobrar o preço normal de 1 unidade.</div>
@@ -731,6 +878,7 @@ function renderCardapio(c){
   function limparForm(){
     form.querySelector('#f_item').value=''; form.querySelector('#f_cat').value='';
     form.querySelector('#f_preco').value=''; form.querySelector('#f_ativo').value='true';
+    form.querySelector('#f_limite').value='';
     temOpcoesChk.checked = false; opcoesWrap.style.display='none';
     cardFormState.faixas = []; cardFormState.opcoes = []; cardFormState.editingId = null;
     renderFaixasList(); renderOpcoesList();
@@ -745,6 +893,8 @@ function renderCardapio(c){
     const categoria = form.querySelector('#f_cat').value.trim();
     const preco = parseFloat(form.querySelector('#f_preco').value);
     const ativo = form.querySelector('#f_ativo').value==='true';
+    const limiteRaw = form.querySelector('#f_limite').value;
+    const limite = limiteRaw.trim()==='' ? null : parseInt(limiteRaw,10);
     if(!item || isNaN(preco)){ alert('Preencha nome do item e preço.'); return; }
     const faixasPreco = cardFormState.faixas
       .filter(f=>f.qtdBloco>=2 && f.precoBloco>0)
@@ -753,7 +903,7 @@ function renderCardapio(c){
     const opcoes = temOpcoes ? cardFormState.opcoes
       .filter(g=>g.nome.trim() && g.alternativasRaw.trim())
       .map(g=>({nome:g.nome.trim(), tipo:g.tipo, alternativas:g.alternativasRaw.split(',').map(s=>s.trim()).filter(Boolean)})) : [];
-    const docObj = { item, categoria, preco, ativo, faixasPreco, temOpcoes, opcoes };
+    const docObj = { item, categoria, preco, ativo, limite, faixasPreco, temOpcoes, opcoes };
     try{
       if(cardFormState.editingId){
         await db.collection('cardapio').doc(cardFormState.editingId).set(docObj);
@@ -768,21 +918,22 @@ function renderCardapio(c){
 
   c.appendChild(el(`<div class="section-title">Itens do Cardápio</div>`));
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
-    <thead><tr><th>Item</th><th>Categoria</th><th>Preço</th><th>Faixas de Qtd.</th><th>Opções</th><th>Ativo</th><th></th></tr></thead>
+    <thead><tr><th>Item</th><th>Categoria</th><th>Preço</th><th>Limite/evento</th><th>Faixas de Qtd.</th><th>Opções</th><th>Ativo</th>${podeMexer?'<th></th>':''}</tr></thead>
     <tbody>${DB.cardapio.length? DB.cardapio.map(i=>{
       const faixasNorm = normalizarPacotes(i.faixasPreco);
       const faixasTxt = faixasNorm.length ? faixasNorm.slice().sort((a,b)=>a.qtdBloco-b.qtdBloco).map(f=>`${f.qtdBloco}un por ${fmtMoney(f.precoBloco)}`).join(' · ') : '—';
       const opcoesTxt = i.temOpcoes && (i.opcoes||[]).length ? (i.opcoes||[]).map(o=>o.nome).join(', ') : '—';
       return `<tr data-id="${i.id}">
       <td>${escapeHtml(i.item)}</td><td>${escapeHtml(i.categoria)}</td><td>${fmtMoney(i.preco)}</td>
+      <td>${(i.limite===null||i.limite===undefined)?'—':i.limite}</td>
       <td style="font-size:12px;">${escapeHtml(faixasTxt)}</td>
       <td style="font-size:12px;">${escapeHtml(opcoesTxt)}</td>
       <td><span class="badge ${i.ativo?'sim':'nao'}">${i.ativo?'Sim':'Não'}</span></td>
-      <td style="white-space:nowrap;">
+      ${podeMexer?`<td style="white-space:nowrap;">
         <button class="btn secondary small" data-edit="${i.id}">Editar</button>
         <button class="btn danger small" data-del="${i.id}">Excluir</button>
-      </td>
-    </tr>`;}).join('') : '<tr><td colspan="7" class="empty-state">Nenhum item cadastrado</td></tr>'}</tbody>
+      </td>`:''}
+    </tr>`;}).join('') : '<tr><td colspan="8" class="empty-state">Nenhum item cadastrado</td></tr>'}</tbody>
   </table></div></div>`);
   c.appendChild(tableWrap);
 
@@ -793,6 +944,7 @@ function renderCardapio(c){
       form.querySelector('#f_cat').value = i.categoria||'';
       form.querySelector('#f_preco').value = i.preco;
       form.querySelector('#f_ativo').value = i.ativo ? 'true' : 'false';
+      form.querySelector('#f_limite').value = (i.limite===null || i.limite===undefined) ? '' : i.limite;
       cardFormState.faixas = normalizarPacotes(i.faixasPreco);
       cardFormState.opcoes = (i.opcoes||[]).map(o=>({nome:o.nome, tipo:o.tipo, alternativasRaw:(o.alternativas||[]).join(', ')}));
       cardFormState.editingId = i.id;
@@ -834,7 +986,8 @@ function renderReservas(c){
         <div><label>Pago?</label><select id="f_pago"><option>Não</option><option>Sim</option></select></div>
         <div><label>Entregue?</label><select id="f_entregue"><option>Não</option><option>Sim</option></select></div>
       </div>
-      <div class="small-note" id="precoPreview" style="margin-bottom:14px;"></div>
+      <div class="small-note" id="precoPreview" style="margin-bottom:4px;"></div>
+      <div class="small-note" id="limitePreview" style="margin-bottom:14px;"></div>
       <div id="opcoesItemWrap"></div>
       <div style="margin-bottom:12px;"><label>⚠️ Observação livre (opcional)</label><input type="text" id="f_obs" placeholder="Ex: alergia, embalar separado..."></div>
       <button class="btn" id="btnAdd">+ Adicionar Pedido</button>
@@ -848,6 +1001,7 @@ function renderReservas(c){
     const itemSel = form.querySelector('#f_item');
     const qtdInput = form.querySelector('#f_qtd');
     const precoPreview = form.querySelector('#precoPreview');
+    const limitePreview = form.querySelector('#limitePreview');
     const opcoesItemWrap = form.querySelector('#opcoesItemWrap');
 
     function refreshHorarios(){
@@ -858,6 +1012,12 @@ function renderReservas(c){
     refreshHorarios();
 
     function itemAtual(){ return DB.cardapio.find(i=>i.id===itemSel.value); }
+
+    function jaReservadoNoEvento(item){
+      const sel = opts.find(o=>o.value===evSel.value);
+      if(!sel || !item) return 0;
+      return DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo && r.item===item.item).reduce((s,r)=>s+r.qtd,0);
+    }
 
     function refreshOpcoesItem(){
       const item = itemAtual();
@@ -881,9 +1041,17 @@ function renderReservas(c){
     function refreshPrecoPreview(){
       const item = itemAtual();
       const qtd = parseInt(qtdInput.value,10) || 0;
-      if(!item){ precoPreview.textContent=''; return; }
-      const total = calcularValorTotal(item, qtd);
-      precoPreview.textContent = qtd>0 ? `Total do pedido: ${fmtMoney(total)} (${fmtMoney(qtd?total/qtd:0)} / un em média)` : '';
+      if(!item){ precoPreview.innerHTML=''; limitePreview.innerHTML=''; return; }
+      const { total, texto } = calcularValorTotalDetalhado(item, qtd);
+      precoPreview.innerHTML = qtd>0 ? `<strong>Total do pedido: ${fmtMoney(total)}</strong>${texto?` — cálculo: ${escapeHtml(texto)}`:''}` : '';
+      if(item.limite!==null && item.limite!==undefined && item.limite>0){
+        const jaReservado = jaReservadoNoEvento(item);
+        const restante = item.limite - jaReservado;
+        const excede = (jaReservado + qtd) > item.limite;
+        limitePreview.innerHTML = `<span style="color:${excede?'var(--warn)':'var(--ink-soft)'}">Reservado neste evento: ${jaReservado} de ${item.limite} (restam ${Math.max(0,restante)})${excede?' — ⚠️ este pedido ultrapassa o limite!':''}</span>`;
+      } else {
+        limitePreview.innerHTML = '';
+      }
     }
 
     itemSel.addEventListener('change', ()=>{ refreshOpcoesItem(); refreshPrecoPreview(); });
@@ -892,10 +1060,29 @@ function renderReservas(c){
 
     form.querySelector('#btnAdd').addEventListener('click', async ()=>{
       const sel = opts.find(o=>o.value===evSel.value);
-      const cliente = form.querySelector('#f_cliente').value.trim();
+      let cliente = form.querySelector('#f_cliente').value.trim();
       const itemObj = itemAtual();
       const qtd = parseInt(qtdInput.value,10);
       if(!cliente || !itemObj || !qtd || qtd<1){ alert('Preencha cliente, item e quantidade válida.'); return; }
+
+      // checa nome de cliente parecido com um já cadastrado, pra evitar duplicidade (ex: "Elisangela" x "Elizangela")
+      const jaExisteExato = DB.clientes.some(cl=>normalizarNome(cl.nome)===normalizarNome(cliente));
+      if(!jaExisteExato){
+        const similar = encontrarClienteSimilar(cliente);
+        if(similar){
+          const usarExistente = confirm(`Já existe um cliente cadastrado com nome parecido: "${similar.nome}".\n\nClique OK se for a MESMA pessoa (usar "${similar.nome}").\nClique Cancelar se for uma pessoa DIFERENTE (manter "${cliente}").`);
+          if(usarExistente){ cliente = similar.nome; }
+        }
+      }
+
+      // checa limite de quantidade do item nesse evento
+      if(itemObj.limite!==null && itemObj.limite!==undefined && itemObj.limite>0){
+        const jaReservado = jaReservadoNoEvento(itemObj);
+        if((jaReservado + qtd) > itemObj.limite){
+          const prosseguir = confirm(`Este pedido ultrapassa o limite de "${itemObj.item}" para este evento (já reservado: ${jaReservado} de ${itemObj.limite}).\n\nDeseja lançar mesmo assim?`);
+          if(!prosseguir) return;
+        }
+      }
 
       // captura opções selecionadas e valida grupos de escolha única
       const opcoesSelecionadas = {};
@@ -949,7 +1136,7 @@ function renderReservas(c){
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
     <thead><tr><th>Data</th><th>Tipo</th><th>Hor.</th><th>Cliente</th><th>Item</th><th>Qtd</th><th>Valor</th><th>Opções/Obs.</th><th>Pagto</th><th>Pago</th><th>Entregue</th><th>Lançado por</th><th></th></tr></thead>
     <tbody>${list.length? list.map(r=>`<tr data-id="${r.id}" class="${(r.pago==='Não'||r.entregue==='Não')?'pend':''}">
-      <td>${fmtDateBR(r.data)}</td><td>${r.tipo}</td><td>${r.horario}</td><td>${escapeHtml(r.cliente)}</td>
+      <td>${fmtDateBR(r.data)}</td><td>${r.tipo}</td><td>${r.horario}</td><td>${escapeHtml(r.cliente)}${whatsappBtn(contatoDoCliente(r.cliente))}</td>
       <td>${escapeHtml(r.item)}</td><td>${r.qtd}</td><td>${fmtMoney(valorReserva(r))}</td>
       <td>${r.opcoesTexto?`<span class="obs-flag">${escapeHtml(r.opcoesTexto)}</span><br>`:''}${r.observacao?`<span class="obs-flag">${escapeHtml(r.observacao)}</span>`:''}</td>
       <td>${r.formaPagamento}</td>
@@ -1074,7 +1261,7 @@ function renderClientes(c){
     <thead><tr><th>Nome</th><th>Contato</th><th>Observações</th><th>Total Comprado</th><th></th></tr></thead>
     <tbody>${list.length? list.map(cl=>{
       const total = DB.reservas.filter(r=>r.cliente.toLowerCase()===cl.nome.toLowerCase()).reduce((s,r)=>s+valorReserva(r),0);
-      return `<tr data-id="${cl.id}"><td>${escapeHtml(cl.nome)}</td><td>${escapeHtml(cl.contato)}</td><td>${escapeHtml(cl.obs)}</td><td>${fmtMoney(total)}</td>
+      return `<tr data-id="${cl.id}"><td>${escapeHtml(cl.nome)}</td><td>${escapeHtml(cl.contato)}${whatsappBtn(cl.contato)}</td><td>${escapeHtml(cl.obs)}</td><td>${fmtMoney(total)}</td>
       <td><button class="btn danger small" data-del="${cl.id}">Excluir</button></td></tr>`;
     }).join('') : '<tr><td colspan="5" class="empty-state">Nenhum cliente cadastrado</td></tr>'}</tbody>
   </table></div></div>`);
@@ -1119,7 +1306,7 @@ function renderAuditoria(c){
 /* ==================== EQUIPE (somente admin) ==================== */
 function renderEquipe(c){
   c.appendChild(el(`<div class="section-title">Gerenciar Equipe</div>`));
-  c.appendChild(el(`<div class="small-note" style="margin-bottom:16px;">Só e-mails cadastrados aqui conseguem entrar no sistema. "Administrador" também vê a Auditoria e pode gerenciar a equipe; "Equipe" acessa o restante normalmente.</div>`));
+  c.appendChild(el(`<div class="small-note" style="margin-bottom:16px;">Só e-mails cadastrados aqui conseguem entrar no sistema. "Administrador" vê tudo, inclusive Auditoria e Equipe. Para "Equipe", você escolhe abaixo se a pessoa também pode cadastrar/editar Eventos e Cardápio (por padrão, não pode).</div>`));
 
   const form = el(`<div class="frame">
     <div class="form-grid">
@@ -1127,36 +1314,80 @@ function renderEquipe(c){
       <div><label>Nome</label><input type="text" id="f_nome"></div>
       <div><label>Papel</label><select id="f_papel"><option value="equipe">Equipe</option><option value="admin">Administrador</option></select></div>
     </div>
+    <div id="permWrap" style="display:flex; gap:20px; margin:6px 0 14px;">
+      <label style="display:flex; align-items:center; gap:6px; text-transform:none; font-size:13.5px;"><input type="checkbox" id="f_permEventos" style="width:auto;"> Pode editar Eventos</label>
+      <label style="display:flex; align-items:center; gap:6px; text-transform:none; font-size:13.5px;"><input type="checkbox" id="f_permCardapio" style="width:auto;"> Pode editar Cardápio</label>
+    </div>
     <button class="btn" id="btnAdd">+ Adicionar / Atualizar Acesso</button>
+    <button class="btn secondary" id="btnCancelEditEquipe" style="display:none;">Cancelar edição</button>
   </div>`);
   c.appendChild(form);
+
+  const papelSel = form.querySelector('#f_papel');
+  const permWrap = form.querySelector('#permWrap');
+  function refreshPermWrap(){ permWrap.style.opacity = papelSel.value==='admin' ? '0.4' : '1'; }
+  papelSel.addEventListener('change', refreshPermWrap);
+  refreshPermWrap();
+
+  let editingEmail = null;
+  function limparFormEquipe(){
+    form.querySelector('#f_email').value=''; form.querySelector('#f_email').removeAttribute('readonly');
+    form.querySelector('#f_nome').value=''; papelSel.value='equipe';
+    form.querySelector('#f_permEventos').checked=false; form.querySelector('#f_permCardapio').checked=false;
+    editingEmail = null; refreshPermWrap();
+    form.querySelector('#btnAdd').textContent = '+ Adicionar / Atualizar Acesso';
+    form.querySelector('#btnCancelEditEquipe').style.display = 'none';
+  }
+  form.querySelector('#btnCancelEditEquipe').addEventListener('click', limparFormEquipe);
+
   form.querySelector('#btnAdd').addEventListener('click', async ()=>{
-    const email = form.querySelector('#f_email').value.trim().toLowerCase();
+    const email = (editingEmail || form.querySelector('#f_email').value.trim().toLowerCase());
     const nome = form.querySelector('#f_nome').value.trim();
-    const papel = form.querySelector('#f_papel').value;
+    const papel = papelSel.value;
+    const permissoes = { eventos: form.querySelector('#f_permEventos').checked, cardapio: form.querySelector('#f_permCardapio').checked };
     if(!email || !email.includes('@') || !nome){ alert('Preencha e-mail válido e nome.'); return; }
     try{
-      await db.collection('equipe').doc(email).set({ nome, papel }, {merge:true});
-      await auditLog('Criou', 'equipe', `Acesso liberado para ${nome} (${email}) como ${papel}`);
-      form.querySelector('#f_email').value=''; form.querySelector('#f_nome').value='';
+      await db.collection('equipe').doc(email).set({ nome, papel, permissoes }, {merge:true});
+      await auditLog(editingEmail?'Atualizou':'Criou', 'equipe', `Acesso de ${nome} (${email}): papel ${papel}, permissões ${JSON.stringify(permissoes)}`);
+      limparFormEquipe();
     }catch(e){ alert('Não foi possível salvar. Confira se você é administrador.'); console.error(e); }
   });
 
   c.appendChild(el(`<div class="section-title">Pessoas com Acesso</div>`));
   const list = [...DB.equipe].sort((a,b)=>(a.nome||'').localeCompare(b.nome||''));
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
-    <thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th></th></tr></thead>
-    <tbody>${list.length? list.map(u=>`<tr data-id="${u.id}">
+    <thead><tr><th>Nome</th><th>E-mail</th><th>Papel</th><th>Eventos</th><th>Cardápio</th><th></th></tr></thead>
+    <tbody>${list.length? list.map(u=>{
+      const perm = u.permissoes||{};
+      const isU_admin = u.papel==='admin';
+      return `<tr data-id="${u.id}">
       <td>${escapeHtml(u.nome||'')}</td><td>${escapeHtml(u.id)}</td>
-      <td><span class="badge ${u.papel==='admin'?'sim':'nao'}">${u.papel==='admin'?'Administrador':'Equipe'}</span></td>
+      <td><span class="badge ${isU_admin?'sim':'nao'}">${isU_admin?'Administrador':'Equipe'}</span></td>
+      <td><span class="badge ${(isU_admin||perm.eventos)?'sim':'nao'}">${(isU_admin||perm.eventos)?'Sim':'Não'}</span></td>
+      <td><span class="badge ${(isU_admin||perm.cardapio)?'sim':'nao'}">${(isU_admin||perm.cardapio)?'Sim':'Não'}</span></td>
       <td style="white-space:nowrap;">
-        <button class="btn secondary small" data-toggle="${u.id}">${u.papel==='admin'?'Tornar Equipe':'Tornar Admin'}</button>
+        <button class="btn secondary small" data-edit="${u.id}">Editar</button>
+        <button class="btn secondary small" data-toggle="${u.id}">${isU_admin?'Tornar Equipe':'Tornar Admin'}</button>
         <button class="btn danger small" data-del="${u.id}">Remover Acesso</button>
       </td>
-    </tr>`).join('') : '<tr><td colspan="4" class="empty-state">Nenhuma pessoa cadastrada</td></tr>'}</tbody>
+    </tr>`;}).join('') : '<tr><td colspan="6" class="empty-state">Nenhuma pessoa cadastrada</td></tr>'}</tbody>
   </table></div></div>`);
   c.appendChild(tableWrap);
 
+  tableWrap.querySelectorAll('[data-edit]').forEach(btn=>btn.addEventListener('click', ()=>{
+    const u = DB.equipe.find(x=>x.id===btn.dataset.edit);
+    form.querySelector('#f_email').value = u.id;
+    form.querySelector('#f_email').setAttribute('readonly','readonly');
+    form.querySelector('#f_nome').value = u.nome||'';
+    papelSel.value = u.papel==='admin' ? 'admin' : 'equipe';
+    form.querySelector('#f_permEventos').checked = !!(u.permissoes&&u.permissoes.eventos);
+    form.querySelector('#f_permCardapio').checked = !!(u.permissoes&&u.permissoes.cardapio);
+    editingEmail = u.id;
+    refreshPermWrap();
+    form.querySelector('#btnAdd').textContent = 'Salvar Alterações';
+    form.querySelector('#btnCancelEditEquipe').style.display = 'inline-block';
+    form.scrollIntoView({behavior:'smooth', block:'start'});
+  }));
   tableWrap.querySelectorAll('[data-toggle]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const u = DB.equipe.find(x=>x.id===btn.dataset.toggle);
     const novoPapel = u.papel==='admin' ? 'equipe' : 'admin';
