@@ -244,7 +244,7 @@ function el(html){ const t=document.createElement('template'); t.innerHTML=html.
 function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 function fmtWhen(ts){ if(!ts || !ts.toDate) return '—'; const d = ts.toDate(); return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
 function userName(){ return (currentUser && (currentUser.displayName || currentUser.email)) || 'Desconhecido'; }
-function whatsappUrl(contato){
+function whatsappUrl(contato, mensagem){
   let d = (contato||'').replace(/\D/g,'').replace(/^0+/, '');
   if(!d) return null;
   if(d.startsWith('55') && (d.length===12 || d.length===13)){
@@ -256,7 +256,10 @@ function whatsappUrl(contato){
   } else {
     return 'INVALIDO'; // tamanho não bate com nenhum formato brasileiro válido — não arrisca embaralhar
   }
-  return `https://wa.me/${d}`;
+  return `https://wa.me/${d}${mensagem ? '?text='+encodeURIComponent(mensagem) : ''}`;
+}
+function mensagemConfirmacao(r){
+  return `Olá ${r.cliente}! 👑\n\nSeu pedido no *Sistema Realeza* foi *confirmado*!\n\n🍽️ Item: ${r.item}\nQuantidade: ${r.qtd}\n💰 Valor: ${fmtMoney(valorReserva(r))}\n\n📅 Retirada: ${fmtDateBR(r.data)}, no culto das ${r.horario}\n\nAté lá! — Ministério de Casais - Bodas 2026`;
 }
 function whatsappBtn(contato, extraStyle){
   const url = whatsappUrl(contato);
@@ -271,6 +274,18 @@ function whatsappBtn(contato, extraStyle){
 function contatoDoCliente(nomeCliente){
   const cl = DB.clientes.find(x=>x.nome.toLowerCase()===String(nomeCliente||'').toLowerCase());
   return cl ? cl.contato : '';
+}
+async function salvarContatoCliente(nome, telefone){
+  try{
+    const existente = DB.clientes.find(cl=>normalizarNome(cl.nome)===normalizarNome(nome));
+    if(existente){
+      if(existente.contato !== telefone){
+        await db.collection('clientes').doc(existente.id).set({contato: telefone}, {merge:true});
+      }
+    } else {
+      await db.collection('clientes').add({nome, contato: telefone, obs:''});
+    }
+  }catch(e){ console.error('Falha ao salvar contato do cliente', e); }
 }
 
 function normalizarNome(s){ return (s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim(); }
@@ -929,8 +944,20 @@ function renderCardapio(c){
     const docObj = { item, categoria, preco, ativo, limite, faixasPreco, temOpcoes, opcoes };
     try{
       if(cardFormState.editingId){
+        const itemAntigo = DB.cardapio.find(i=>i.id===cardFormState.editingId);
         await db.collection('cardapio').doc(cardFormState.editingId).set(docObj);
-        await auditLog('Atualizou', 'cardapio', `Item "${item}" editado`);
+        await auditLog('Atualizou', 'cardapio', `Item "${itemAntigo?itemAntigo.item:item}" editado${itemAntigo && itemAntigo.item!==item ? ` (novo nome: "${item}")` : ''}`);
+
+        if(itemAntigo && itemAntigo.item !== item){
+          const atualizarReservas = confirm(`O nome do item mudou de "${itemAntigo.item}" para "${item}".\n\nDeseja atualizar esse nome também nos pedidos já lançados anteriormente com esse item? (Sem isso, o "Limite de Produção" e os relatórios não vão reconhecer os pedidos antigos como o mesmo item.)`);
+          if(atualizarReservas){
+            const afetadas = DB.reservas.filter(r=>r.item===itemAntigo.item);
+            for(const r of afetadas){
+              await db.collection('reservas').doc(r.id).update({ item });
+            }
+            await auditLog('Atualizou', 'reservas', `Nome do item atualizado em ${afetadas.length} pedido(s): "${itemAntigo.item}" → "${item}"`);
+          }
+        }
       } else {
         await db.collection('cardapio').add(docObj);
         await auditLog('Criou', 'cardapio', `Item "${item}" (${fmtMoney(preco)})`);
@@ -1005,6 +1032,7 @@ function renderReservas(c){
         <div><label>Evento</label><select id="f_evento">${opts.map(o=>`<option value="${o.value}">${o.label}</option>`).join('')}</select></div>
         <div><label>Horário</label><select id="f_horario"></select></div>
         <div><label>Cliente</label><input type="text" id="f_cliente" list="clientesList" placeholder="Nome do cliente"></div>
+        <div><label>Telefone/WhatsApp *</label><input type="text" id="f_telefone" placeholder="(11) 91234-5678"></div>
         <div><label>Item</label><select id="f_item">${itensAtivos.map(i=>`<option value="${i.id}">${escapeHtml(i.item)}</option>`).join('')}</select></div>
         <div><label>Quantidade</label><input type="number" min="1" value="1" id="f_qtd"></div>
         <div><label>Forma de Pagamento</label><select id="f_pagto"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
@@ -1027,6 +1055,12 @@ function renderReservas(c){
     const itemSel = form.querySelector('#f_item');
     const qtdInput = form.querySelector('#f_qtd');
     const clienteInput = form.querySelector('#f_cliente');
+    const telefoneInput = form.querySelector('#f_telefone');
+    clienteInput.addEventListener('input', ()=>{
+      if(telefoneInput.value.trim()) return; // não sobrescreve o que a pessoa já digitou
+      const cl = DB.clientes.find(x=>normalizarNome(x.nome)===normalizarNome(clienteInput.value));
+      if(cl && cl.contato) telefoneInput.value = cl.contato;
+    });
     const pagtoSel = form.querySelector('#f_pagto');
     const pagoSel = form.querySelector('#f_pago');
     const entregueSel = form.querySelector('#f_entregue');
@@ -1096,7 +1130,7 @@ function renderReservas(c){
 
     function limparFormReserva(){
       evSel.selectedIndex = 0; refreshHorarios();
-      clienteInput.value = ''; itemSel.selectedIndex = 0;
+      clienteInput.value = ''; telefoneInput.value = ''; itemSel.selectedIndex = 0;
       qtdInput.value = '1'; pagtoSel.value='Dinheiro'; pagoSel.value='Não'; entregueSel.value='Não';
       obsInput.value = '';
       editingReservaId = null;
@@ -1113,6 +1147,7 @@ function renderReservas(c){
       evSel.value = eventoKey(r.data, r.tipo); refreshHorarios();
       horSel.value = r.horario;
       clienteInput.value = r.cliente;
+      telefoneInput.value = contatoDoCliente(r.cliente) || '';
       const itemMatch = DB.cardapio.find(i=>i.item===r.item);
       if(itemMatch) itemSel.value = itemMatch.id;
       qtdInput.value = r.qtd;
@@ -1131,9 +1166,13 @@ function renderReservas(c){
     btnAdd.addEventListener('click', async ()=>{
       const sel = opts.find(o=>o.value===evSel.value);
       let cliente = clienteInput.value.trim();
+      const telefone = telefoneInput.value.trim();
       const itemObj = itemAtual();
       const qtd = parseInt(qtdInput.value,10);
       if(!cliente || !itemObj || !qtd || qtd<1){ alert('Preencha cliente, item e quantidade válida.'); return; }
+      if(!telefone){ alert('O telefone/WhatsApp do cliente é obrigatório.'); telefoneInput.focus(); return; }
+      const telefoneCheck = whatsappUrl(telefone);
+      if(!telefoneCheck || telefoneCheck==='INVALIDO'){ alert('Esse telefone não parece válido. Confira o DDD e o número (deve ter DDD + 8 ou 9 dígitos).'); telefoneInput.focus(); return; }
 
       // checa nome de cliente parecido com um já cadastrado, pra evitar duplicidade (ex: "Elisangela" x "Elizangela")
       const jaExisteExato = DB.clientes.some(cl=>normalizarNome(cl.nome)===normalizarNome(cliente));
@@ -1191,6 +1230,7 @@ function renderReservas(c){
         try{
           await db.collection('reservas').doc(editingReservaId).update(dadosReserva);
           await auditLog('Atualizou', 'reservas', `Reserva de ${cliente} editada — ${itemObj.item} (${qtd}x, ${fmtMoney(valorTotal)})`);
+          await salvarContatoCliente(cliente, telefone);
           limparFormReserva();
         }catch(e){ alert('Não foi possível salvar a edição.'); console.error(e); }
         return;
@@ -1199,9 +1239,7 @@ function renderReservas(c){
       dadosReserva.vendedor = userName();
       await db.collection('reservas').add(dadosReserva);
       await auditLog('Criou', 'reservas', `Pedido de ${cliente} — ${itemObj.item} (${qtd}x) em ${fmtDateBR(sel.data)}`);
-      if(!DB.clientes.find(cl=>cl.nome.toLowerCase()===cliente.toLowerCase())){
-        await db.collection('clientes').add({nome:cliente, contato:'', obs:''});
-      }
+      await salvarContatoCliente(cliente, telefone);
     });
   }
 
@@ -1235,6 +1273,7 @@ function renderReservas(c){
         <button class="btn secondary small" data-editreserva="${r.id}">Editar Reserva</button>
         <button class="btn secondary small" data-pago="${r.id}">${r.pago==='Sim'?'Marcar Não Pago':'Marcar Pago'}</button>
         <button class="btn secondary small" data-ent="${r.id}">${r.entregue==='Sim'?'Desfazer Entrega':'Marcar Entregue'}</button>
+        <button class="btn secondary small" data-confirmar="${r.id}" style="${r.confirmadoEm?'border-color:var(--ok); color:var(--ok);':''}">${r.confirmadoEm?'✓ Reenviar Aviso':'Confirmar e Avisar Cliente'}</button>
         <button class="btn danger small" data-del="${r.id}">Excluir</button>
       </td>
     </tr>`;
@@ -1283,6 +1322,21 @@ function renderReservas(c){
     const novo = r.entregue==='Sim'?'Não':'Sim';
     await db.collection('reservas').doc(r.id).update({entregue:novo});
     await auditLog('Atualizou', 'reservas', `Entrega de ${r.cliente} (${r.item}): ${r.entregue} → ${novo}`);
+  }));
+  tableWrap.querySelectorAll('[data-confirmar]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const r = DB.reservas.find(x=>x.id===btn.dataset.confirmar);
+    const contato = contatoDoCliente(r.cliente);
+    const testeUrl = whatsappUrl(contato);
+    if(!testeUrl || testeUrl==='INVALIDO'){
+      alert(`"${r.cliente}" não tem um telefone válido cadastrado. Cadastre (ou corrija) o telefone dele na aba Clientes antes de enviar a confirmação.`);
+      return;
+    }
+    const url = whatsappUrl(contato, mensagemConfirmacao(r));
+    window.open(url, '_blank');
+    try{
+      await db.collection('reservas').doc(r.id).update({ confirmadoEm: firebase.firestore.FieldValue.serverTimestamp(), confirmadoPor: userName() });
+      await auditLog('Atualizou', 'reservas', `Confirmação enviada por WhatsApp para ${r.cliente} (${r.item})`);
+    }catch(e){ console.error('Falha ao registrar confirmação', e); }
   }));
   tableWrap.querySelectorAll('[data-del]').forEach(btn=>btn.addEventListener('click', async ()=>{
     if(!confirm('Excluir este pedido?')) return;
