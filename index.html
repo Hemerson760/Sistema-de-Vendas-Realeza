@@ -247,14 +247,23 @@ function userName(){ return (currentUser && (currentUser.displayName || currentU
 function whatsappUrl(contato){
   let d = (contato||'').replace(/\D/g,'').replace(/^0+/, '');
   if(!d) return null;
-  if(d.length>11 && d.startsWith('55')){ d = d.slice(2); } // já tinha DDI, tira pra normalizar e recolocar
-  if(d.length===10){ d = d.slice(0,2) + '9' + d.slice(2); } // celular sem o 9º dígito (formato antigo)
-  d = '55'+d; // sempre assume Brasil
+  if(d.startsWith('55') && (d.length===12 || d.length===13)){
+    // já vem com DDI e no tamanho certo (10 ou 11 dígitos locais + 55) — não mexe
+  } else if(d.length===11){
+    d = '55'+d; // DDD + 9 dígitos (celular padrão atual)
+  } else if(d.length===10){
+    d = '55'+d.slice(0,2)+'9'+d.slice(2); // DDD + 8 dígitos (formato antigo, sem o 9º dígito) — insere o 9
+  } else {
+    return 'INVALIDO'; // tamanho não bate com nenhum formato brasileiro válido — não arrisca embaralhar
+  }
   return `https://wa.me/${d}`;
 }
 function whatsappBtn(contato, extraStyle){
   const url = whatsappUrl(contato);
   if(!url) return '';
+  if(url==='INVALIDO'){
+    return `<span title="Número de telefone parece incompleto ou com dígito a mais/a menos — confira o cadastro em Clientes" style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; background:var(--warn); vertical-align:middle; margin-left:6px; color:#fff; font-size:12px; font-weight:bold; cursor:help; ${extraStyle||''}">!</span>`;
+  }
   return `<a href="${url}" target="_blank" rel="noopener" title="Chamar no WhatsApp" style="display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border-radius:50%; background:#25D366; vertical-align:middle; margin-left:6px; ${extraStyle||''}">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
   </a>`;
@@ -772,7 +781,7 @@ function calcularValorTotalDetalhado(item, qtd){
   for(const p of pacotes){
     if(p.qtdBloco>0 && p.precoBloco>0){
       const n = Math.floor(restante / p.qtdBloco);
-      if(n>0){ total += n * p.precoBloco; restante -= n * p.qtdBloco; partes.push(`${n}x pacote de ${p.qtdBloco}un (${fmtMoney(p.precoBloco)} cada) = ${fmtMoney(n*p.precoBloco)}`); }
+      if(n>0){ total += n * p.precoBloco; restante -= n * p.qtdBloco; partes.push(`${n}x pacote promocional de ${p.qtdBloco} unidades = ${fmtMoney(n*p.precoBloco)} no total (o pacote inteiro, não por unidade)`); }
     }
   }
   if(restante>0){ total += restante * base; partes.push(`${restante}un avulsa${restante>1?'s':''} a ${fmtMoney(base)} = ${fmtMoney(restante*base)}`); }
@@ -972,8 +981,10 @@ function renderCardapio(c){
 function renderReservas(c){
   const opts = eventosOptions();
   const itensAtivos = DB.cardapio.filter(i=>i.ativo);
+  let editingReservaId = null;
 
-  c.appendChild(el(`<div class="section-title">Nova Reserva / Pedido</div>`));
+  c.appendChild(el(`<div class="section-title" id="reservaFormTitle">Nova Reserva / Pedido</div>`));
+  const formTitle = c.querySelector('#reservaFormTitle');
   if(opts.length===0 || itensAtivos.length===0){
     c.appendChild(el(`<div class="frame empty-state">Cadastre pelo menos um Evento e um Item do Cardápio antes de lançar pedidos.</div>`));
   } else {
@@ -993,7 +1004,8 @@ function renderReservas(c){
       <div id="opcoesItemWrap"></div>
       <div style="margin-bottom:12px;"><label>⚠️ Observação livre (opcional)</label><input type="text" id="f_obs" placeholder="Ex: alergia, embalar separado..."></div>
       <button class="btn" id="btnAdd">+ Adicionar Pedido</button>
-      <div class="small-note">Lançado automaticamente em nome de: <strong>${escapeHtml(userName())}</strong></div>
+      <button class="btn secondary" id="btnCancelEditReserva" style="display:none;">Cancelar edição</button>
+      <div class="small-note" id="lancadoPorNote">Lançado automaticamente em nome de: <strong>${escapeHtml(userName())}</strong></div>
       <datalist id="clientesList">${DB.clientes.map(cl=>`<option value="${escapeHtml(cl.nome)}">`).join('')}</datalist>
     </div>`);
     c.appendChild(form);
@@ -1002,9 +1014,16 @@ function renderReservas(c){
     const horSel = form.querySelector('#f_horario');
     const itemSel = form.querySelector('#f_item');
     const qtdInput = form.querySelector('#f_qtd');
+    const clienteInput = form.querySelector('#f_cliente');
+    const pagtoSel = form.querySelector('#f_pagto');
+    const pagoSel = form.querySelector('#f_pago');
+    const entregueSel = form.querySelector('#f_entregue');
+    const obsInput = form.querySelector('#f_obs');
     const precoPreview = form.querySelector('#precoPreview');
     const limitePreview = form.querySelector('#limitePreview');
     const opcoesItemWrap = form.querySelector('#opcoesItemWrap');
+    const btnAdd = form.querySelector('#btnAdd');
+    const btnCancelEditReserva = form.querySelector('#btnCancelEditReserva');
 
     function refreshHorarios(){
       const sel = opts.find(o=>o.value===evSel.value);
@@ -1018,20 +1037,22 @@ function renderReservas(c){
     function jaReservadoNoEvento(item){
       const sel = opts.find(o=>o.value===evSel.value);
       if(!sel || !item) return 0;
-      return DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo && r.item===item.item).reduce((s,r)=>s+r.qtd,0);
+      return DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo && r.item===item.item && r.id!==editingReservaId).reduce((s,r)=>s+r.qtd,0);
     }
 
-    function refreshOpcoesItem(){
+    function refreshOpcoesItem(marcarSelecionadas){
       const item = itemAtual();
       opcoesItemWrap.innerHTML = '';
       if(item && item.temOpcoes && (item.opcoes||[]).length){
         item.opcoes.forEach((grupo, gi)=>{
           const inputType = grupo.tipo==='multipla' ? 'checkbox' : 'radio';
+          const jaMarcados = marcarSelecionadas && marcarSelecionadas[grupo.nome] ?
+            (Array.isArray(marcarSelecionadas[grupo.nome]) ? marcarSelecionadas[grupo.nome] : [marcarSelecionadas[grupo.nome]]) : [];
           const box = el(`<div class="frame" style="padding:12px; margin-bottom:10px;" data-grupo="${gi}">
             <label style="margin-bottom:8px;">${escapeHtml(grupo.nome)}${grupo.tipo==='unica'?' *':''}</label>
             <div style="display:flex; flex-wrap:wrap; gap:12px;">
               ${grupo.alternativas.map((alt,ai)=>`<label style="display:flex; align-items:center; gap:6px; text-transform:none; font-size:14px; font-family:'Cormorant Garamond',serif;">
-                <input type="${inputType}" name="opgrupo_${gi}" value="${escapeHtml(alt)}" style="width:auto;"> ${escapeHtml(alt)}
+                <input type="${inputType}" name="opgrupo_${gi}" value="${escapeHtml(alt)}" ${jaMarcados.includes(alt)?'checked':''} style="width:auto;"> ${escapeHtml(alt)}
               </label>`).join('')}
             </div>
           </div>`);
@@ -1045,7 +1066,7 @@ function renderReservas(c){
       const qtd = parseInt(qtdInput.value,10) || 0;
       if(!item){ precoPreview.innerHTML=''; limitePreview.innerHTML=''; return; }
       const { total, texto } = calcularValorTotalDetalhado(item, qtd);
-      precoPreview.innerHTML = qtd>0 ? `<strong>Total do pedido: ${fmtMoney(total)}</strong>${texto?` — cálculo: ${escapeHtml(texto)}`:''}` : '';
+      precoPreview.innerHTML = qtd>0 ? `<strong>Total do pedido: ${fmtMoney(total)}</strong> <span style="color:var(--ink-soft);">(${fmtMoney(qtd?total/qtd:0)} em média por unidade)</span>${texto?`<br>cálculo: ${escapeHtml(texto)}`:''}` : '';
       if(item.limite!==null && item.limite!==undefined && item.limite>0){
         const jaReservado = jaReservadoNoEvento(item);
         const depois = jaReservado + qtd;
@@ -1061,9 +1082,43 @@ function renderReservas(c){
     qtdInput.addEventListener('input', refreshPrecoPreview);
     refreshOpcoesItem(); refreshPrecoPreview();
 
-    form.querySelector('#btnAdd').addEventListener('click', async ()=>{
+    function limparFormReserva(){
+      evSel.selectedIndex = 0; refreshHorarios();
+      clienteInput.value = ''; itemSel.selectedIndex = 0;
+      qtdInput.value = '1'; pagtoSel.value='Dinheiro'; pagoSel.value='Não'; entregueSel.value='Não';
+      obsInput.value = '';
+      editingReservaId = null;
+      formTitle.textContent = 'Nova Reserva / Pedido';
+      btnAdd.textContent = '+ Adicionar Pedido';
+      btnCancelEditReserva.style.display = 'none';
+      form.querySelector('#lancadoPorNote').style.display = '';
+      refreshOpcoesItem(); refreshPrecoPreview();
+    }
+    btnCancelEditReserva.addEventListener('click', limparFormReserva);
+
+    window._carregarReservaParaEdicao = function(r){
+      editingReservaId = r.id;
+      evSel.value = eventoKey(r.data, r.tipo); refreshHorarios();
+      horSel.value = r.horario;
+      clienteInput.value = r.cliente;
+      const itemMatch = DB.cardapio.find(i=>i.item===r.item);
+      if(itemMatch) itemSel.value = itemMatch.id;
+      qtdInput.value = r.qtd;
+      pagtoSel.value = r.formaPagamento || 'Dinheiro';
+      pagoSel.value = r.pago || 'Não';
+      entregueSel.value = r.entregue || 'Não';
+      obsInput.value = r.observacao || '';
+      refreshOpcoesItem(r.opcoesSelecionadas); refreshPrecoPreview();
+      formTitle.textContent = `Editar Reserva — ${r.cliente}`;
+      btnAdd.textContent = 'Salvar Alterações';
+      btnCancelEditReserva.style.display = 'inline-block';
+      form.querySelector('#lancadoPorNote').style.display = 'none';
+      form.scrollIntoView({behavior:'smooth', block:'start'});
+    };
+
+    btnAdd.addEventListener('click', async ()=>{
       const sel = opts.find(o=>o.value===evSel.value);
-      let cliente = form.querySelector('#f_cliente').value.trim();
+      let cliente = clienteInput.value.trim();
       const itemObj = itemAtual();
       const qtd = parseInt(qtdInput.value,10);
       if(!cliente || !itemObj || !qtd || qtd<1){ alert('Preencha cliente, item e quantidade válida.'); return; }
@@ -1085,10 +1140,10 @@ function renderReservas(c){
         try{
           const snap = await db.collection('reservas')
             .where('data','==',sel.data).where('tipo','==',sel.tipo).where('item','==',itemObj.item).get();
-          jaReservadoFresco = snap.docs.reduce((s,d)=>s+(d.data().qtd||0),0);
+          jaReservadoFresco = snap.docs.filter(d=>d.id!==editingReservaId).reduce((s,d)=>s+(d.data().qtd||0),0);
         }catch(e){
           console.error('Falha ao revalidar limite', e);
-          jaReservadoFresco = jaReservadoNoEvento(itemObj); // usa o valor local como alternativa
+          jaReservadoFresco = jaReservadoNoEvento(itemObj);
         }
         if((jaReservadoFresco + qtd) > itemObj.limite){
           alert(`Não é possível lançar este pedido: "${itemObj.item}" já tem ${jaReservadoFresco} de ${itemObj.limite} reservados neste evento. Restam apenas ${Math.max(0,itemObj.limite-jaReservadoFresco)} unidade(s).`);
@@ -1110,17 +1165,27 @@ function renderReservas(c){
       const valorTotal = calcularValorTotal(itemObj, qtd);
       const precoUnit = qtd ? valorTotal/qtd : 0;
 
-      const novaReserva = {
+      const dadosReserva = {
         data: sel.data, tipo: sel.tipo, horario: horSel.value,
         cliente, item: itemObj.item, qtd, precoUnit, valorTotal,
         opcoesSelecionadas, opcoesTexto,
-        observacao: form.querySelector('#f_obs').value.trim(),
-        formaPagamento: form.querySelector('#f_pagto').value,
-        pago: form.querySelector('#f_pago').value,
-        entregue: form.querySelector('#f_entregue').value,
-        vendedor: userName(),
+        observacao: obsInput.value.trim(),
+        formaPagamento: pagtoSel.value,
+        pago: pagoSel.value,
+        entregue: entregueSel.value,
       };
-      await db.collection('reservas').add(novaReserva);
+
+      if(editingReservaId){
+        try{
+          await db.collection('reservas').doc(editingReservaId).update(dadosReserva);
+          await auditLog('Atualizou', 'reservas', `Reserva de ${cliente} editada — ${itemObj.item} (${qtd}x, ${fmtMoney(valorTotal)})`);
+          limparFormReserva();
+        }catch(e){ alert('Não foi possível salvar a edição.'); console.error(e); }
+        return;
+      }
+
+      dadosReserva.vendedor = userName();
+      await db.collection('reservas').add(dadosReserva);
       await auditLog('Criou', 'reservas', `Pedido de ${cliente} — ${itemObj.item} (${qtd}x) em ${fmtDateBR(sel.data)}`);
       if(!DB.clientes.find(cl=>cl.nome.toLowerCase()===cliente.toLowerCase())){
         await db.collection('clientes').add({nome:cliente, contato:'', obs:''});
@@ -1156,32 +1221,19 @@ function renderReservas(c){
       <td><span class="badge ${r.entregue==='Sim'?'sim':'nao'}">${r.entregue}</span></td>
       <td>${escapeHtml(r.vendedor||'')}</td>
       <td style="white-space:nowrap;">
+        <button class="btn secondary small" data-editreserva="${r.id}">Editar Reserva</button>
         <button class="btn secondary small" data-pago="${r.id}">${r.pago==='Sim'?'Marcar Não Pago':'Marcar Pago'}</button>
         <button class="btn secondary small" data-ent="${r.id}">${r.entregue==='Sim'?'Desfazer Entrega':'Marcar Entregue'}</button>
-        ${isAdmin() ? `<button class="btn secondary small" data-editval="${r.id}">Editar Valor</button>` : ''}
         <button class="btn danger small" data-del="${r.id}">Excluir</button>
       </td>
     </tr>`).join('') : '<tr><td colspan="13" class="empty-state">Nenhum pedido encontrado</td></tr>'}</tbody>
   </table></div></div>`);
   c.appendChild(tableWrap);
 
-  tableWrap.querySelectorAll('[data-editval]').forEach(btn=>btn.addEventListener('click', async ()=>{
-    const r = DB.reservas.find(x=>x.id===btn.dataset.editval);
-    const novaQtdStr = prompt('Quantidade:', r.qtd);
-    if(novaQtdStr===null) return;
-    const novaQtd = parseInt(novaQtdStr,10);
-    if(!novaQtd || novaQtd<1){ alert('Quantidade inválida.'); return; }
-    const novoValorStr = prompt('Valor total do pedido (R$):', valorReserva(r).toFixed(2));
-    if(novoValorStr===null) return;
-    const novoValor = parseFloat(novoValorStr.replace(',','.'));
-    if(isNaN(novoValor) || novoValor<0){ alert('Valor inválido.'); return; }
-    const valorAntigo = valorReserva(r);
-    const qtdAntiga = r.qtd;
-    const precoUnit = novaQtd ? novoValor/novaQtd : 0;
-    await db.collection('reservas').doc(r.id).update({qtd:novaQtd, valorTotal:novoValor, precoUnit});
-    await auditLog('Atualizou', 'reservas', `Valor do pedido de ${r.cliente} (${r.item}) editado: ${qtdAntiga}x/${fmtMoney(valorAntigo)} → ${novaQtd}x/${fmtMoney(novoValor)}`);
+  tableWrap.querySelectorAll('[data-editreserva]').forEach(btn=>btn.addEventListener('click', ()=>{
+    const r = DB.reservas.find(x=>x.id===btn.dataset.editreserva);
+    if(r && window._carregarReservaParaEdicao) window._carregarReservaParaEdicao(r);
   }));
-
   tableWrap.querySelectorAll('[data-pago]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const r = DB.reservas.find(x=>x.id===btn.dataset.pago);
     const novo = r.pago==='Sim'?'Não':'Sim';
@@ -1250,7 +1302,10 @@ function renderDespesas(c){
 
 /* ==================== CLIENTES ==================== */
 function renderClientes(c){
-  c.appendChild(el(`<div class="section-title">Novo Cliente</div>`));
+  let editingClienteId = null;
+
+  c.appendChild(el(`<div class="section-title" id="clienteFormTitle">Novo Cliente</div>`));
+  const formTitle = c.querySelector('#clienteFormTitle');
   const form = el(`<div class="frame">
     <div class="form-grid">
       <div><label>Nome</label><input type="text" id="f_nome"></div>
@@ -1258,13 +1313,54 @@ function renderClientes(c){
       <div><label>Observações</label><input type="text" id="f_obs"></div>
     </div>
     <button class="btn" id="btnAdd">+ Adicionar Cliente</button>
+    <button class="btn secondary" id="btnCancelEditCliente" style="display:none;">Cancelar edição</button>
   </div>`);
   c.appendChild(form);
-  form.querySelector('#btnAdd').addEventListener('click', async ()=>{
-    const nome = form.querySelector('#f_nome').value.trim();
+  const nomeInput = form.querySelector('#f_nome');
+  const contatoInput = form.querySelector('#f_contato');
+  const obsInput = form.querySelector('#f_obs');
+  const btnAdd = form.querySelector('#btnAdd');
+  const btnCancelEditCliente = form.querySelector('#btnCancelEditCliente');
+
+  function limparFormCliente(){
+    nomeInput.value=''; contatoInput.value=''; obsInput.value='';
+    editingClienteId = null;
+    formTitle.textContent = 'Novo Cliente';
+    btnAdd.textContent = '+ Adicionar Cliente';
+    btnCancelEditCliente.style.display = 'none';
+  }
+  btnCancelEditCliente.addEventListener('click', limparFormCliente);
+
+  btnAdd.addEventListener('click', async ()=>{
+    const nome = nomeInput.value.trim();
+    const contato = contatoInput.value.trim();
+    const obs = obsInput.value.trim();
     if(!nome){ alert('Preencha o nome.'); return; }
-    await db.collection('clientes').add({ nome, contato: form.querySelector('#f_contato').value.trim(), obs: form.querySelector('#f_obs').value.trim() });
+
+    if(editingClienteId){
+      const clienteAntigo = DB.clientes.find(cl=>cl.id===editingClienteId);
+      try{
+        await db.collection('clientes').doc(editingClienteId).update({ nome, contato, obs });
+        await auditLog('Atualizou', 'clientes', `Cliente "${clienteAntigo.nome}" editado${clienteAntigo.nome!==nome?` (novo nome: "${nome}")`:''}`);
+
+        if(clienteAntigo && clienteAntigo.nome !== nome){
+          const atualizarReservas = confirm(`O nome mudou de "${clienteAntigo.nome}" para "${nome}".\n\nDeseja atualizar esse nome também nos pedidos já lançados anteriormente para essa pessoa?`);
+          if(atualizarReservas){
+            const afetadas = DB.reservas.filter(r=>normalizarNome(r.cliente)===normalizarNome(clienteAntigo.nome));
+            for(const r of afetadas){
+              await db.collection('reservas').doc(r.id).update({ cliente: nome });
+            }
+            await auditLog('Atualizou', 'reservas', `Nome do cliente atualizado em ${afetadas.length} pedido(s): "${clienteAntigo.nome}" → "${nome}"`);
+          }
+        }
+        limparFormCliente();
+      }catch(e){ alert('Não foi possível salvar as alterações.'); console.error(e); }
+      return;
+    }
+
+    await db.collection('clientes').add({ nome, contato, obs });
     await auditLog('Criou', 'clientes', `Cliente "${nome}"`);
+    nomeInput.value=''; contatoInput.value=''; obsInput.value='';
   });
 
   c.appendChild(el(`<div class="section-title">Clientes Cadastrados</div>`));
@@ -1274,10 +1370,22 @@ function renderClientes(c){
     <tbody>${list.length? list.map(cl=>{
       const total = DB.reservas.filter(r=>r.cliente.toLowerCase()===cl.nome.toLowerCase()).reduce((s,r)=>s+valorReserva(r),0);
       return `<tr data-id="${cl.id}"><td>${escapeHtml(cl.nome)}</td><td>${escapeHtml(cl.contato)}${whatsappBtn(cl.contato)}</td><td>${escapeHtml(cl.obs)}</td><td>${fmtMoney(total)}</td>
-      <td><button class="btn danger small" data-del="${cl.id}">Excluir</button></td></tr>`;
+      <td style="white-space:nowrap;"><button class="btn secondary small" data-edit="${cl.id}">Editar</button> <button class="btn danger small" data-del="${cl.id}">Excluir</button></td></tr>`;
     }).join('') : '<tr><td colspan="5" class="empty-state">Nenhum cliente cadastrado</td></tr>'}</tbody>
   </table></div></div>`);
   c.appendChild(tableWrap);
+
+  tableWrap.querySelectorAll('[data-edit]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const cl = DB.clientes.find(x=>x.id===btn.dataset.edit);
+      nomeInput.value = cl.nome; contatoInput.value = cl.contato||''; obsInput.value = cl.obs||'';
+      editingClienteId = cl.id;
+      formTitle.textContent = `Editar Cliente — ${cl.nome}`;
+      btnAdd.textContent = 'Salvar Alterações';
+      btnCancelEditCliente.style.display = 'inline-block';
+      form.scrollIntoView({behavior:'smooth', block:'start'});
+    });
+  });
   tableWrap.querySelectorAll('[data-del]').forEach(btn=>btn.addEventListener('click', async ()=>{
     if(!confirm('Excluir este cliente?')) return;
     const cl = DB.clientes.find(x=>x.id===btn.dataset.del);
