@@ -245,10 +245,12 @@ function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, m=>({'&':'&amp;
 function fmtWhen(ts){ if(!ts || !ts.toDate) return '—'; const d = ts.toDate(); return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
 function userName(){ return (currentUser && (currentUser.displayName || currentUser.email)) || 'Desconhecido'; }
 function whatsappUrl(contato){
-  const d = (contato||'').replace(/\D/g,'');
+  let d = (contato||'').replace(/\D/g,'').replace(/^0+/, '');
   if(!d) return null;
-  const comDDI = d.length<=11 ? '55'+d : d; // assume Brasil se não tiver DDI
-  return `https://wa.me/${comDDI}`;
+  if(d.length>11 && d.startsWith('55')){ d = d.slice(2); } // já tinha DDI, tira pra normalizar e recolocar
+  if(d.length===10){ d = d.slice(0,2) + '9' + d.slice(2); } // celular sem o 9º dígito (formato antigo)
+  d = '55'+d; // sempre assume Brasil
+  return `https://wa.me/${d}`;
 }
 function whatsappBtn(contato, extraStyle){
   const url = whatsappUrl(contato);
@@ -1046,9 +1048,10 @@ function renderReservas(c){
       precoPreview.innerHTML = qtd>0 ? `<strong>Total do pedido: ${fmtMoney(total)}</strong>${texto?` — cálculo: ${escapeHtml(texto)}`:''}` : '';
       if(item.limite!==null && item.limite!==undefined && item.limite>0){
         const jaReservado = jaReservadoNoEvento(item);
-        const restante = item.limite - jaReservado;
-        const excede = (jaReservado + qtd) > item.limite;
-        limitePreview.innerHTML = `<span style="color:${excede?'var(--warn)':'var(--ink-soft)'}">Reservado neste evento: ${jaReservado} de ${item.limite} (restam ${Math.max(0,restante)})${excede?' — ⚠️ este pedido ultrapassa o limite!':''}</span>`;
+        const depois = jaReservado + qtd;
+        const restante = item.limite - depois;
+        const excede = depois > item.limite;
+        limitePreview.innerHTML = `<span style="color:${excede?'var(--warn)':'var(--ink-soft)'}">Reservado até agora: ${jaReservado} de ${item.limite}. Com este pedido: <strong>${depois} de ${item.limite}</strong> (restam ${Math.max(0,restante)})${excede?' — ⚠️ ultrapassa o limite, não vai deixar salvar!':''}</span>`;
       } else {
         limitePreview.innerHTML = '';
       }
@@ -1075,12 +1078,21 @@ function renderReservas(c){
         }
       }
 
-      // checa limite de quantidade do item nesse evento
+      // checa limite de quantidade do item nesse evento — revalida direto no banco (não só no cache local),
+      // pra reduzir o risco de duas pessoas venderem a última unidade ao mesmo tempo
       if(itemObj.limite!==null && itemObj.limite!==undefined && itemObj.limite>0){
-        const jaReservado = jaReservadoNoEvento(itemObj);
-        if((jaReservado + qtd) > itemObj.limite){
-          const prosseguir = confirm(`Este pedido ultrapassa o limite de "${itemObj.item}" para este evento (já reservado: ${jaReservado} de ${itemObj.limite}).\n\nDeseja lançar mesmo assim?`);
-          if(!prosseguir) return;
+        let jaReservadoFresco;
+        try{
+          const snap = await db.collection('reservas')
+            .where('data','==',sel.data).where('tipo','==',sel.tipo).where('item','==',itemObj.item).get();
+          jaReservadoFresco = snap.docs.reduce((s,d)=>s+(d.data().qtd||0),0);
+        }catch(e){
+          console.error('Falha ao revalidar limite', e);
+          jaReservadoFresco = jaReservadoNoEvento(itemObj); // usa o valor local como alternativa
+        }
+        if((jaReservadoFresco + qtd) > itemObj.limite){
+          alert(`Não é possível lançar este pedido: "${itemObj.item}" já tem ${jaReservadoFresco} de ${itemObj.limite} reservados neste evento. Restam apenas ${Math.max(0,itemObj.limite-jaReservadoFresco)} unidade(s).`);
+          return;
         }
       }
 
