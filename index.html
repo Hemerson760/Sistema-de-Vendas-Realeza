@@ -782,12 +782,18 @@ function normalizarPacotes(faixasPreco){
   return (faixasPreco||[]).map(f=>({
     qtdBloco: Number(f.qtdBloco ?? f.qtdMinima ?? 0),
     precoBloco: Number(f.precoBloco ?? f.precoUnit ?? 0),
+    validoAte: f.validoAte || null, // 'YYYY-MM-DD' ou null = sem data de validade
   })).filter(f=>f.qtdBloco>=2 && f.precoBloco>0);
 }
+function pacoteValidoParaData(pacote, dataRef){
+  if(!pacote.validoAte) return true; // sem data de validade = sempre vale
+  if(!dataRef) return true; // sem data de referência informada, não bloqueia
+  return dataRef <= pacote.validoAte; // strings 'YYYY-MM-DD' comparam certo com <=
+}
 
-function calcularValorTotal(item, qtd){
+function calcularValorTotal(item, qtd, dataRef){
   const base = Number(item.preco)||0;
-  const pacotes = normalizarPacotes(item.faixasPreco).sort((a,b)=>b.qtdBloco-a.qtdBloco); // maior pacote primeiro
+  const pacotes = normalizarPacotes(item.faixasPreco).filter(p=>pacoteValidoParaData(p,dataRef)).sort((a,b)=>b.qtdBloco-a.qtdBloco); // maior pacote primeiro
   let restante = Math.max(0, Number(qtd)||0);
   let total = 0;
   for(const p of pacotes){
@@ -799,9 +805,11 @@ function calcularValorTotal(item, qtd){
   total += restante * base;
   return total;
 }
-function calcularValorTotalDetalhado(item, qtd){
+function calcularValorTotalDetalhado(item, qtd, dataRef){
   const base = Number(item.preco)||0;
-  const pacotes = normalizarPacotes(item.faixasPreco).sort((a,b)=>b.qtdBloco-a.qtdBloco);
+  const todosPacotes = normalizarPacotes(item.faixasPreco);
+  const pacotes = todosPacotes.filter(p=>pacoteValidoParaData(p,dataRef)).sort((a,b)=>b.qtdBloco-a.qtdBloco);
+  const expirados = todosPacotes.filter(p=>!pacoteValidoParaData(p,dataRef));
   let restante = Math.max(0, Number(qtd)||0);
   let total = 0;
   const partes = [];
@@ -812,6 +820,7 @@ function calcularValorTotalDetalhado(item, qtd){
     }
   }
   if(restante>0){ total += restante * base; partes.push(`${restante}un avulsa${restante>1?'s':''} a ${fmtMoney(base)} = ${fmtMoney(restante*base)}`); }
+  if(expirados.length){ partes.push(`(⚠️ pacote de ${expirados.map(p=>p.qtdBloco+'un').join(', ')} vencido em ${expirados.map(p=>fmtDateBR(p.validoAte)).join(', ')} — não aplicado)`); }
   return { total, texto: partes.join(' + ') };
 }
 
@@ -864,20 +873,24 @@ function renderCardapio(c){
         <input type="number" min="2" value="${f.qtdBloco}" data-faixa-qtd="${i}" style="width:90px;" placeholder="Qtd">
         <span class="small-note" style="margin:0;">unidades juntas, custa</span>
         <input type="number" step="0.01" value="${f.precoBloco}" data-faixa-preco="${i}" style="width:110px;" placeholder="R$ total">
-        <span class="small-note" style="margin:0;">no total</span>
+        <span class="small-note" style="margin:0;">no total · válido até</span>
+        <input type="date" value="${f.validoAte||''}" data-faixa-validade="${i}" style="width:150px;">
         <button type="button" class="btn danger small" data-faixa-del="${i}">Remover</button>
       </div>`).join('') || `<div class="small-note">Nenhum pacote — o item sempre usa o preço de 1 unidade.</div>`;
   }
   faixasListEl.addEventListener('input', e=>{
     if(e.target.dataset.faixaQtd!==undefined){ cardFormState.faixas[e.target.dataset.faixaQtd].qtdBloco = parseFloat(e.target.value)||0; }
     if(e.target.dataset.faixaPreco!==undefined){ cardFormState.faixas[e.target.dataset.faixaPreco].precoBloco = parseFloat(e.target.value)||0; }
+    if(e.target.dataset.faixaValidade!==undefined){ cardFormState.faixas[e.target.dataset.faixaValidade].validoAte = e.target.value || null; }
   });
   faixasListEl.addEventListener('click', e=>{
     if(e.target.dataset.faixaDel!==undefined){ cardFormState.faixas.splice(Number(e.target.dataset.faixaDel),1); renderFaixasList(); }
   });
   form.querySelector('#btnAddFaixa').addEventListener('click', ()=>{
-    cardFormState.faixas.push({qtdBloco:2, precoBloco:0}); renderFaixasList();
+    cardFormState.faixas.push({qtdBloco:2, precoBloco:0, validoAte:null}); renderFaixasList();
   });
+
+  form.appendChild(el(`<div class="small-note" style="margin-top:-6px; margin-bottom:12px;">Deixe "válido até" em branco pra pacote sem prazo (vale sempre).</div>`));
 
 
   function renderOpcoesList(){
@@ -936,7 +949,7 @@ function renderCardapio(c){
     if(!item || isNaN(preco)){ alert('Preencha nome do item e preço.'); return; }
     const faixasPreco = cardFormState.faixas
       .filter(f=>f.qtdBloco>=2 && f.precoBloco>0)
-      .map(f=>({qtdBloco:Number(f.qtdBloco), precoBloco:Number(f.precoBloco)}));
+      .map(f=>({qtdBloco:Number(f.qtdBloco), precoBloco:Number(f.precoBloco), validoAte: f.validoAte || null}));
     const temOpcoes = temOpcoesChk.checked;
     const opcoes = temOpcoes ? cardFormState.opcoes
       .filter(g=>g.nome.trim() && g.alternativasRaw.trim())
@@ -971,12 +984,16 @@ function renderCardapio(c){
     <thead><tr><th>Item</th><th>Categoria</th><th>Preço</th><th>Limite/evento</th><th>Faixas de Qtd.</th><th>Opções</th><th>Ativo</th>${podeMexer?'<th></th>':''}</tr></thead>
     <tbody>${DB.cardapio.length? DB.cardapio.map(i=>{
       const faixasNorm = normalizarPacotes(i.faixasPreco);
-      const faixasTxt = faixasNorm.length ? faixasNorm.slice().sort((a,b)=>a.qtdBloco-b.qtdBloco).map(f=>`${f.qtdBloco}un por ${fmtMoney(f.precoBloco)}`).join(' · ') : '—';
+      const hojeStr = new Date().toISOString().slice(0,10);
+      const faixasTxt = faixasNorm.length ? faixasNorm.slice().sort((a,b)=>a.qtdBloco-b.qtdBloco).map(f=>{
+        const venceu = f.validoAte && hojeStr > f.validoAte;
+        return `${f.qtdBloco}un por ${fmtMoney(f.precoBloco)}${f.validoAte?` <span style="color:${venceu?'var(--warn)':'var(--ink-soft)'};">(até ${fmtDateBR(f.validoAte)}${venceu?' — vencido':''})</span>`:''}`;
+      }).join(' · ') : '—';
       const opcoesTxt = i.temOpcoes && (i.opcoes||[]).length ? (i.opcoes||[]).map(o=>o.nome).join(', ') : '—';
       return `<tr data-id="${i.id}">
       <td>${escapeHtml(i.item)}</td><td>${escapeHtml(i.categoria)}</td><td>${fmtMoney(i.preco)}</td>
       <td>${(i.limite===null||i.limite===undefined)?'—':i.limite}</td>
-      <td style="font-size:12px;">${escapeHtml(faixasTxt)}</td>
+      <td style="font-size:12px;">${faixasTxt}</td>
       <td style="font-size:12px;">${escapeHtml(opcoesTxt)}</td>
       <td><span class="badge ${i.ativo?'sim':'nao'}">${i.ativo?'Sim':'Não'}</span></td>
       ${podeMexer?`<td style="white-space:nowrap;">
@@ -1075,7 +1092,7 @@ function renderReservas(c){
       const sel = opts.find(o=>o.value===evSel.value);
       horSel.innerHTML = (sel.cultos||['-']).map(h=>`<option>${h}</option>`).join('');
     }
-    evSel.addEventListener('change', refreshHorarios);
+    evSel.addEventListener('change', ()=>{ refreshHorarios(); refreshPrecoPreview(); });
     refreshHorarios();
 
     function itemAtual(){ return DB.cardapio.find(i=>i.id===itemSel.value); }
@@ -1111,7 +1128,8 @@ function renderReservas(c){
       const item = itemAtual();
       const qtd = parseInt(qtdInput.value,10) || 0;
       if(!item){ precoPreview.innerHTML=''; limitePreview.innerHTML=''; return; }
-      const { total, texto } = calcularValorTotalDetalhado(item, qtd);
+      const selAtual = opts.find(o=>o.value===evSel.value);
+      const { total, texto } = calcularValorTotalDetalhado(item, qtd, selAtual?selAtual.data:null);
       precoPreview.innerHTML = qtd>0 ? `<strong>Total do pedido: ${fmtMoney(total)}</strong> <span style="color:var(--ink-soft);">(${fmtMoney(qtd?total/qtd:0)} em média por unidade)</span>${texto?`<br>cálculo: ${escapeHtml(texto)}`:''}` : '';
       if(item.limite!==null && item.limite!==undefined && item.limite>0){
         const jaReservado = jaReservadoNoEvento(item);
@@ -1213,7 +1231,7 @@ function renderReservas(c){
         }
       }
       const opcoesTexto = Object.entries(opcoesSelecionadas).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join('/'):v}`).join('; ');
-      const valorTotal = calcularValorTotal(itemObj, qtd);
+      const valorTotal = calcularValorTotal(itemObj, qtd, sel.data);
       const precoUnit = qtd ? valorTotal/qtd : 0;
 
       const dadosReserva = {
