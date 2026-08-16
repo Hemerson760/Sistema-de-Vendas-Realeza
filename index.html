@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+    <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8" />
@@ -1434,9 +1434,14 @@ function renderReservas(c){
 }
 
 /* ==================== DESPESAS ==================== */
+const UNIDADES_PADRAO = ['kg','g','L','ml','unidade','pacote','caixa','dúzia','fardo','saco'];
+
 function renderDespesas(c){
   const opts = eventosOptions();
-  c.appendChild(el(`<div class="section-title">Nova Despesa</div>`));
+  let editingDespesaId = null;
+
+  c.appendChild(el(`<div class="section-title" id="despesaFormTitle">Nova Despesa</div>`));
+  const formTitle = c.querySelector('#despesaFormTitle');
   if(opts.length===0){
     c.appendChild(el(`<div class="frame empty-state">Cadastre um evento primeiro.</div>`));
   } else {
@@ -1445,32 +1450,152 @@ function renderDespesas(c){
         <div><label>Evento</label><select id="f_evento">${opts.map(o=>`<option value="${o.value}">${o.label}</option>`).join('')}</select></div>
         <div><label>Descrição</label><input type="text" id="f_desc" placeholder="Ex: Massa e recheio"></div>
         <div><label>Categoria</label><input type="text" id="f_cat" placeholder="Ex: Ingredientes"></div>
+        <div><label>Quantidade</label><input type="number" step="0.01" min="0" id="f_qtd" placeholder="Ex: 5"></div>
+        <div><label>Unidade</label><select id="f_unidade">${UNIDADES_PADRAO.map(u=>`<option value="${u}">${u}</option>`).join('')}<option value="__outra">Outra (digitar)...</option></select></div>
+        <div id="f_unidadeOutraWrap" style="display:none;"><label>Qual unidade?</label><input type="text" id="f_unidadeOutra" placeholder="Ex: bandeja"></div>
         <div><label>Valor (R$)</label><input type="number" step="0.01" id="f_valor"></div>
       </div>
       <button class="btn" id="btnAdd">+ Adicionar Despesa</button>
+      <button class="btn secondary" id="btnCancelEditDespesa" style="display:none;">Cancelar edição</button>
     </div>`);
     c.appendChild(form);
-    form.querySelector('#btnAdd').addEventListener('click', async ()=>{
-      const sel = opts.find(o=>o.value===form.querySelector('#f_evento').value);
-      const descricao = form.querySelector('#f_desc').value.trim();
-      const categoria = form.querySelector('#f_cat').value.trim();
-      const valor = parseFloat(form.querySelector('#f_valor').value);
+
+    const evSel = form.querySelector('#f_evento');
+    const descInput = form.querySelector('#f_desc');
+    const catInput = form.querySelector('#f_cat');
+    const qtdInput = form.querySelector('#f_qtd');
+    const unidadeSel = form.querySelector('#f_unidade');
+    const unidadeOutraWrap = form.querySelector('#f_unidadeOutraWrap');
+    const unidadeOutraInput = form.querySelector('#f_unidadeOutra');
+    const valorInput = form.querySelector('#f_valor');
+    const btnAdd = form.querySelector('#btnAdd');
+    const btnCancelEditDespesa = form.querySelector('#btnCancelEditDespesa');
+
+    unidadeSel.addEventListener('change', ()=>{
+      unidadeOutraWrap.style.display = unidadeSel.value==='__outra' ? 'block' : 'none';
+    });
+
+    function limparFormDespesa(){
+      descInput.value=''; catInput.value=''; qtdInput.value=''; valorInput.value='';
+      unidadeSel.value = UNIDADES_PADRAO[0]; unidadeOutraWrap.style.display='none'; unidadeOutraInput.value='';
+      editingDespesaId = null;
+      formTitle.textContent = 'Nova Despesa';
+      btnAdd.textContent = '+ Adicionar Despesa';
+      btnCancelEditDespesa.style.display = 'none';
+    }
+    btnCancelEditDespesa.addEventListener('click', limparFormDespesa);
+
+    window._carregarDespesaParaEdicao = function(d){
+      editingDespesaId = d.id;
+      evSel.value = eventoKey(d.data, d.tipo);
+      descInput.value = d.descricao||'';
+      catInput.value = d.categoria||'';
+      qtdInput.value = (d.quantidade===null||d.quantidade===undefined) ? '' : d.quantidade;
+      if(d.unidade && !UNIDADES_PADRAO.includes(d.unidade)){
+        unidadeSel.value = '__outra'; unidadeOutraWrap.style.display='block'; unidadeOutraInput.value = d.unidade;
+      } else {
+        unidadeSel.value = d.unidade || UNIDADES_PADRAO[0]; unidadeOutraWrap.style.display='none';
+      }
+      valorInput.value = d.valor;
+      formTitle.textContent = `Editar Despesa — ${d.descricao}`;
+      btnAdd.textContent = 'Salvar Alterações';
+      btnCancelEditDespesa.style.display = 'inline-block';
+      form.scrollIntoView({behavior:'smooth', block:'start'});
+    };
+
+    btnAdd.addEventListener('click', async ()=>{
+      const sel = opts.find(o=>o.value===evSel.value);
+      const descricao = descInput.value.trim();
+      const categoria = catInput.value.trim();
+      const valor = parseFloat(valorInput.value);
+      const quantidadeRaw = qtdInput.value.trim();
+      const quantidade = quantidadeRaw==='' ? null : parseFloat(quantidadeRaw);
+      const unidade = unidadeSel.value==='__outra' ? unidadeOutraInput.value.trim() : unidadeSel.value;
       if(!descricao || isNaN(valor)){ alert('Preencha descrição e valor.'); return; }
-      await db.collection('despesas').add({ data:sel.data, tipo:sel.tipo, descricao, categoria, valor, lancadoPor: userName() });
+
+      const dadosDespesa = { data:sel.data, tipo:sel.tipo, descricao, categoria, valor, quantidade, unidade: quantidade!==null ? unidade : null };
+
+      if(editingDespesaId){
+        try{
+          await db.collection('despesas').doc(editingDespesaId).update(dadosDespesa);
+          await auditLog('Atualizou', 'despesas', `Despesa "${descricao}" editada (${fmtMoney(valor)})`);
+          limparFormDespesa();
+        }catch(e){ alert('Não foi possível salvar a edição.'); console.error(e); }
+        return;
+      }
+
+      dadosDespesa.lancadoPor = userName();
+      await db.collection('despesas').add(dadosDespesa);
       await auditLog('Criou', 'despesas', `Despesa "${descricao}" (${fmtMoney(valor)}) em ${fmtDateBR(sel.data)}`);
     });
   }
 
   c.appendChild(el(`<div class="section-title">Despesas Lançadas</div>`));
-  const list = [...DB.despesas].sort((a,b)=>b.data.localeCompare(a.data));
-  const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
-    <thead><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th>Categoria</th><th>Valor</th><th>Lançado por</th><th></th></tr></thead>
+  window._filtrosDespesa = window._filtrosDespesa || {evento:''};
+  window._despesaSort = window._despesaSort || {key:'data', dir:'desc'};
+  const filterWrap = el(`<div class="filters-row">
+    <div><label>Evento</label><select id="filtEventoDespesa"><option value="">Todos</option>${opts.map(o=>`<option value="${o.value}" ${window._filtrosDespesa.evento===o.value?'selected':''}>${o.label}</option>`).join('')}</select></div>
+  </div>`);
+  c.appendChild(filterWrap);
+  filterWrap.querySelector('#filtEventoDespesa').addEventListener('change', e=>{ window._filtrosDespesa.evento=e.target.value; render(); });
+
+  let list = [...DB.despesas];
+  if(window._filtrosDespesa.evento){ const [d,t]=window._filtrosDespesa.evento.split('|'); list = list.filter(x=>x.data===d && x.tipo===t); }
+
+  function despesaSortValue(d, key){
+    switch(key){
+      case 'data': return d.data||'';
+      case 'tipo': return d.tipo||'';
+      case 'descricao': return (d.descricao||'').toLowerCase();
+      case 'categoria': return (d.categoria||'').toLowerCase();
+      case 'quantidade': return d.quantidade===null||d.quantidade===undefined ? -Infinity : Number(d.quantidade);
+      case 'valor': return Number(d.valor)||0;
+      case 'lancadoPor': return (d.lancadoPor||'').toLowerCase();
+      default: return '';
+    }
+  }
+  list.sort((a,b)=>{
+    const va = despesaSortValue(a, window._despesaSort.key);
+    const vb = despesaSortValue(b, window._despesaSort.key);
+    let cmp = (typeof va==='number' && typeof vb==='number') ? va-vb : String(va).localeCompare(String(vb));
+    return window._despesaSort.dir==='asc' ? cmp : -cmp;
+  });
+
+  const DESP_COLS = [
+    {key:'data', label:'Data'}, {key:'tipo', label:'Tipo'}, {key:'descricao', label:'Descrição'},
+    {key:'categoria', label:'Categoria'}, {key:'quantidade', label:'Qtd/Unidade'}, {key:'valor', label:'Valor'},
+    {key:'lancadoPor', label:'Lançado por'}, {key:null, label:''},
+  ];
+  const theadHtml = `<thead><tr>${DESP_COLS.map(col=>{
+    if(!col.key) return `<th>${col.label}</th>`;
+    const ativo = window._despesaSort.key===col.key;
+    const seta = ativo ? (window._despesaSort.dir==='asc'?' ▲':' ▼') : '';
+    return `<th data-sortcol="${col.key}" style="cursor:pointer; user-select:none;" title="Clique para ordenar">${col.label}${seta}</th>`;
+  }).join('')}</tr></thead>`;
+
+  const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>${theadHtml}
     <tbody>${list.length? list.map(d=>`<tr data-id="${d.id}">
-      <td>${fmtDateBR(d.data)}</td><td>${d.tipo}</td><td>${escapeHtml(d.descricao)}</td><td>${escapeHtml(d.categoria)}</td><td>${fmtMoney(d.valor)}</td><td>${escapeHtml(d.lancadoPor||'')}</td>
-      <td><button class="btn danger small" data-del="${d.id}">Excluir</button></td>
-    </tr>`).join('') : '<tr><td colspan="7" class="empty-state">Nenhuma despesa cadastrada</td></tr>'}</tbody>
+      <td>${fmtDateBR(d.data)}</td><td>${d.tipo}</td><td>${escapeHtml(d.descricao)}</td><td>${escapeHtml(d.categoria)}</td>
+      <td>${(d.quantidade===null||d.quantidade===undefined)?'—':`${d.quantidade} ${escapeHtml(d.unidade||'')}`}</td>
+      <td>${fmtMoney(d.valor)}</td><td>${escapeHtml(d.lancadoPor||'')}</td>
+      <td style="white-space:nowrap;">
+        <button class="btn secondary small" data-editdespesa="${d.id}">Editar</button>
+        <button class="btn danger small" data-del="${d.id}">Excluir</button>
+      </td>
+    </tr>`).join('') : '<tr><td colspan="8" class="empty-state">Nenhuma despesa cadastrada</td></tr>'}</tbody>
   </table></div></div>`);
   c.appendChild(tableWrap);
+
+  tableWrap.querySelectorAll('[data-sortcol]').forEach(th=>th.addEventListener('click', ()=>{
+    const key = th.dataset.sortcol;
+    if(window._despesaSort.key===key){ window._despesaSort.dir = window._despesaSort.dir==='asc'?'desc':'asc'; }
+    else { window._despesaSort = {key, dir:'asc'}; }
+    render();
+  }));
+  tableWrap.querySelectorAll('[data-editdespesa]').forEach(btn=>btn.addEventListener('click', ()=>{
+    const d = DB.despesas.find(x=>x.id===btn.dataset.editdespesa);
+    if(d && window._carregarDespesaParaEdicao) window._carregarDespesaParaEdicao(d);
+  }));
   tableWrap.querySelectorAll('[data-del]').forEach(btn=>btn.addEventListener('click', async ()=>{
     if(!confirm('Excluir esta despesa?')) return;
     const d = DB.despesas.find(x=>x.id===btn.dataset.del);
