@@ -1,4 +1,4 @@
-    <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8" />
@@ -237,8 +237,15 @@ const monthLabel = (iso) => { const [y,m] = iso.split('-'); const meses=['Jan','
 function eventoKey(data,tipo){ return data+'|'+tipo; }
 function eventosOptions(){
   return [...DB.eventos].sort((a,b)=>a.data.localeCompare(b.data)).map(e=>({
-    value: eventoKey(e.data,e.tipo), label: `${fmtDateBR(e.data)} — ${e.tipo}`, data:e.data, tipo:e.tipo, cultos:e.cultos
+    value: eventoKey(e.data,e.tipo), label: `${fmtDateBR(e.data)} — ${e.tipo}`, data:e.data, tipo:e.tipo, cultos:e.cultos, id:e.id
   }));
+}
+function eventoOptionsHtml(opts, selectedValue){
+  const hojeStr = new Date().toISOString().slice(0,10);
+  return opts.map(o=>{
+    const passado = o.data < hojeStr;
+    return `<option value="${o.value}" ${selectedValue===o.value?'selected':''} style="${passado?'color:#B3A98C;':''}">${o.label}${passado?' (já passou)':''}</option>`;
+  }).join('');
 }
 function el(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstChild; }
 function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
@@ -826,7 +833,7 @@ function calcularValorTotalDetalhado(item, qtd, dataRef){
 
 function renderCardapio(c){
   const podeMexer = podeEditar('cardapio');
-  const cardFormState = { faixas: [], opcoes: [], editingId: null };
+  const cardFormState = { faixas: [], opcoes: [], eventosVinculados: [], editingId: null };
 
   if(!podeMexer){
     c.appendChild(el(`<div class="small-note" style="margin-bottom:16px;">Você tem acesso apenas para consulta nesta aba. Fale com um administrador se precisar cadastrar ou alterar itens do cardápio.</div>`));
@@ -855,6 +862,12 @@ function renderCardapio(c){
         <div id="opcoesList"></div>
         <button type="button" class="btn secondary small" id="btnAddOpcao">+ Adicionar grupo de opções</button>
       </div>
+    </div>
+
+    <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--line);">
+      <label style="margin-bottom:6px;">Eventos em que este item aparece</label>
+      <div class="small-note" style="margin-top:-4px; margin-bottom:8px;">Marque os eventos específicos em que esse item pode ser reservado. Se não marcar nenhum, ele fica disponível em <strong>todos</strong> os eventos (padrão).</div>
+      <div id="eventosVinculadosList" style="max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:6px; padding:10px;"></div>
     </div>
 
     <div style="margin-top:16px;"><button class="btn" id="btnAdd">+ Adicionar Item</button> <button class="btn secondary" id="btnCancelEdit" style="display:none;">Cancelar edição</button></div>
@@ -920,6 +933,26 @@ function renderCardapio(c){
   form.querySelector('#btnAddOpcao').addEventListener('click', ()=>{
     cardFormState.opcoes.push({nome:'', tipo:'unica', alternativasRaw:''}); renderOpcoesList();
   });
+  const eventosVinculadosListEl = form.querySelector('#eventosVinculadosList');
+  function renderEventosVinculadosList(){
+    const eventosOrdenados = eventosOptions();
+    const hojeStr = new Date().toISOString().slice(0,10);
+    eventosVinculadosListEl.innerHTML = eventosOrdenados.length ? eventosOrdenados.map(o=>{
+      const passado = o.data < hojeStr;
+      const marcado = cardFormState.eventosVinculados.includes(o.id);
+      return `<label style="display:flex; align-items:center; gap:8px; text-transform:none; font-size:14px; font-family:'Cormorant Garamond',serif; padding:4px 0; ${passado?'color:var(--ink-soft);':''}">
+        <input type="checkbox" data-evento-vinculado="${o.id}" ${marcado?'checked':''} style="width:auto;"> ${escapeHtml(o.label)}${passado?' (já passou)':''}
+      </label>`;
+    }).join('') : `<div class="small-note">Nenhum evento cadastrado ainda.</div>`;
+  }
+  eventosVinculadosListEl.addEventListener('change', e=>{
+    const id = e.target.dataset.eventoVinculado;
+    if(id===undefined) return;
+    if(e.target.checked){ if(!cardFormState.eventosVinculados.includes(id)) cardFormState.eventosVinculados.push(id); }
+    else { cardFormState.eventosVinculados = cardFormState.eventosVinculados.filter(x=>x!==id); }
+  });
+  renderEventosVinculadosList();
+
   temOpcoesChk.addEventListener('change', ()=>{
     opcoesWrap.style.display = temOpcoesChk.checked ? 'block' : 'none';
     if(temOpcoesChk.checked && cardFormState.opcoes.length===0){ cardFormState.opcoes.push({nome:'', tipo:'unica', alternativasRaw:''}); renderOpcoesList(); }
@@ -931,8 +964,8 @@ function renderCardapio(c){
     form.querySelector('#f_preco').value=''; form.querySelector('#f_ativo').value='true';
     form.querySelector('#f_limite').value='';
     temOpcoesChk.checked = false; opcoesWrap.style.display='none';
-    cardFormState.faixas = []; cardFormState.opcoes = []; cardFormState.editingId = null;
-    renderFaixasList(); renderOpcoesList();
+    cardFormState.faixas = []; cardFormState.opcoes = []; cardFormState.eventosVinculados = []; cardFormState.editingId = null;
+    renderFaixasList(); renderOpcoesList(); renderEventosVinculadosList();
     form.querySelector('#btnAdd').textContent = '+ Adicionar Item';
     form.querySelector('#btnCancelEdit').style.display = 'none';
   }
@@ -954,7 +987,7 @@ function renderCardapio(c){
     const opcoes = temOpcoes ? cardFormState.opcoes
       .filter(g=>g.nome.trim() && g.alternativasRaw.trim())
       .map(g=>({nome:g.nome.trim(), tipo:g.tipo, alternativas:g.alternativasRaw.split(',').map(s=>s.trim()).filter(Boolean)})) : [];
-    const docObj = { item, categoria, preco, ativo, limite, faixasPreco, temOpcoes, opcoes };
+    const docObj = { item, categoria, preco, ativo, limite, faixasPreco, temOpcoes, opcoes, eventosVinculados: [...cardFormState.eventosVinculados] };
     try{
       if(cardFormState.editingId){
         const itemAntigo = DB.cardapio.find(i=>i.id===cardFormState.editingId);
@@ -981,7 +1014,7 @@ function renderCardapio(c){
 
   c.appendChild(el(`<div class="section-title">Itens do Cardápio</div>`));
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
-    <thead><tr><th>Item</th><th>Categoria</th><th>Preço</th><th>Limite/evento</th><th>Faixas de Qtd.</th><th>Opções</th><th>Ativo</th>${podeMexer?'<th></th>':''}</tr></thead>
+    <thead><tr><th>Item</th><th>Categoria</th><th>Preço</th><th>Limite/evento</th><th>Faixas de Qtd.</th><th>Opções</th><th>Eventos</th><th>Ativo</th>${podeMexer?'<th></th>':''}</tr></thead>
     <tbody>${DB.cardapio.length? DB.cardapio.map(i=>{
       const faixasNorm = normalizarPacotes(i.faixasPreco);
       const hojeStr = new Date().toISOString().slice(0,10);
@@ -990,17 +1023,19 @@ function renderCardapio(c){
         return `${f.qtdBloco}un por ${fmtMoney(f.precoBloco)}${f.validoAte?` <span style="color:${venceu?'var(--warn)':'var(--ink-soft)'};">(até ${fmtDateBR(f.validoAte)}${venceu?' — vencido':''})</span>`:''}`;
       }).join(' · ') : '—';
       const opcoesTxt = i.temOpcoes && (i.opcoes||[]).length ? (i.opcoes||[]).map(o=>o.nome).join(', ') : '—';
+      const eventosTxt = (i.eventosVinculados||[]).length ? `${i.eventosVinculados.length} evento(s) específico(s)` : 'Todos os eventos';
       return `<tr data-id="${i.id}">
       <td>${escapeHtml(i.item)}</td><td>${escapeHtml(i.categoria)}</td><td>${fmtMoney(i.preco)}</td>
       <td>${(i.limite===null||i.limite===undefined)?'—':i.limite}</td>
       <td style="font-size:12px;">${faixasTxt}</td>
       <td style="font-size:12px;">${escapeHtml(opcoesTxt)}</td>
+      <td style="font-size:12px;">${escapeHtml(eventosTxt)}</td>
       <td><span class="badge ${i.ativo?'sim':'nao'}">${i.ativo?'Sim':'Não'}</span></td>
       ${podeMexer?`<td style="white-space:nowrap;">
         <button class="btn secondary small" data-edit="${i.id}">Editar</button>
         <button class="btn danger small" data-del="${i.id}">Excluir</button>
       </td>`:''}
-    </tr>`;}).join('') : '<tr><td colspan="8" class="empty-state">Nenhum item cadastrado</td></tr>'}</tbody>
+    </tr>`;}).join('') : '<tr><td colspan="9" class="empty-state">Nenhum item cadastrado</td></tr>'}</tbody>
   </table></div></div>`);
   c.appendChild(tableWrap);
 
@@ -1014,10 +1049,11 @@ function renderCardapio(c){
       form.querySelector('#f_limite').value = (i.limite===null || i.limite===undefined) ? '' : i.limite;
       cardFormState.faixas = normalizarPacotes(i.faixasPreco);
       cardFormState.opcoes = (i.opcoes||[]).map(o=>({nome:o.nome, tipo:o.tipo, alternativasRaw:(o.alternativas||[]).join(', ')}));
+      cardFormState.eventosVinculados = [...(i.eventosVinculados||[])];
       cardFormState.editingId = i.id;
       temOpcoesChk.checked = !!i.temOpcoes;
       opcoesWrap.style.display = i.temOpcoes ? 'block' : 'none';
-      renderFaixasList(); renderOpcoesList();
+      renderFaixasList(); renderOpcoesList(); renderEventosVinculadosList();
       form.querySelector('#btnAdd').textContent = 'Salvar Alterações';
       form.querySelector('#btnCancelEdit').style.display = 'inline-block';
       form.scrollIntoView({behavior:'smooth', block:'start'});
@@ -1046,11 +1082,11 @@ function renderReservas(c){
   } else {
     const form = el(`<div class="frame">
       <div class="form-grid">
-        <div><label>Evento</label><select id="f_evento">${opts.map(o=>`<option value="${o.value}">${o.label}</option>`).join('')}</select></div>
+        <div><label>Evento</label><select id="f_evento">${eventoOptionsHtml(opts)}</select></div>
         <div><label>Horário</label><select id="f_horario"></select></div>
         <div><label>Cliente</label><input type="text" id="f_cliente" list="clientesList" placeholder="Nome do cliente"></div>
         <div><label>Telefone/WhatsApp *</label><input type="text" id="f_telefone" placeholder="(11) 91234-5678"></div>
-        <div><label>Item</label><select id="f_item">${itensAtivos.map(i=>`<option value="${i.id}">${escapeHtml(i.item)}</option>`).join('')}</select></div>
+        <div><label>Item</label><select id="f_item"></select></div>
         <div><label>Quantidade</label><input type="number" min="1" value="1" id="f_qtd"></div>
         <div><label>Forma de Pagamento</label><select id="f_pagto"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
         <div><label>Pago?</label><select id="f_pago"><option>Não</option><option>Sim</option></select></div>
@@ -1092,8 +1128,13 @@ function renderReservas(c){
       const sel = opts.find(o=>o.value===evSel.value);
       horSel.innerHTML = (sel.cultos||['-']).map(h=>`<option>${h}</option>`).join('');
     }
-    evSel.addEventListener('change', ()=>{ refreshHorarios(); refreshPrecoPreview(); });
-    refreshHorarios();
+    function refreshItemOptions(){
+      const sel = opts.find(o=>o.value===evSel.value);
+      const disponiveis = itensAtivos.filter(i=> !(i.eventosVinculados||[]).length || (sel && i.eventosVinculados.includes(sel.id)));
+      itemSel.innerHTML = disponiveis.length ? disponiveis.map(i=>`<option value="${i.id}">${escapeHtml(i.item)}</option>`).join('') : `<option value="">— Nenhum item vinculado a este evento —</option>`;
+    }
+    evSel.addEventListener('change', ()=>{ refreshHorarios(); refreshItemOptions(); refreshOpcoesItem(); refreshPrecoPreview(); });
+    refreshHorarios(); refreshItemOptions();
 
     function itemAtual(){ return DB.cardapio.find(i=>i.id===itemSel.value); }
 
@@ -1147,7 +1188,7 @@ function renderReservas(c){
     refreshOpcoesItem(); refreshPrecoPreview();
 
     function limparFormReserva(){
-      evSel.selectedIndex = 0; refreshHorarios();
+      evSel.selectedIndex = 0; refreshHorarios(); refreshItemOptions();
       clienteInput.value = ''; telefoneInput.value = ''; itemSel.selectedIndex = 0;
       qtdInput.value = '1'; pagtoSel.value='Dinheiro'; pagoSel.value='Não'; entregueSel.value='Não';
       obsInput.value = '';
@@ -1162,7 +1203,7 @@ function renderReservas(c){
 
     window._carregarReservaParaEdicao = function(r){
       editingReservaId = r.id;
-      evSel.value = eventoKey(r.data, r.tipo); refreshHorarios();
+      evSel.value = eventoKey(r.data, r.tipo); refreshHorarios(); refreshItemOptions();
       horSel.value = r.horario;
       clienteInput.value = r.cliente;
       telefoneInput.value = contatoDoCliente(r.cliente) || '';
@@ -1265,7 +1306,7 @@ function renderReservas(c){
   window._filtros = window._filtros || {evento:'', pago:'', entregue:''};
   window._reservaSort = window._reservaSort || {key:'data', dir:'desc'};
   const filterWrap = el(`<div class="filters-row">
-    <div><label>Evento</label><select id="filtEvento"><option value="">Todos</option>${opts.map(o=>`<option value="${o.value}" ${window._filtros.evento===o.value?'selected':''}>${o.label}</option>`).join('')}</select></div>
+    <div><label>Evento</label><select id="filtEvento"><option value="">Todos</option>${eventoOptionsHtml(opts, window._filtros.evento)}</select></div>
     <div><label>Pago?</label><select id="filtPago"><option value="">Todos</option><option ${window._filtros.pago==='Sim'?'selected':''}>Sim</option><option ${window._filtros.pago==='Não'?'selected':''}>Não</option></select></div>
     <div><label>Entregue?</label><select id="filtEntregue"><option value="">Todos</option><option ${window._filtros.entregue==='Sim'?'selected':''}>Sim</option><option ${window._filtros.entregue==='Não'?'selected':''}>Não</option></select></div>
   </div>`);
@@ -1447,7 +1488,7 @@ function renderDespesas(c){
   } else {
     const form = el(`<div class="frame">
       <div class="form-grid">
-        <div><label>Evento</label><select id="f_evento">${opts.map(o=>`<option value="${o.value}">${o.label}</option>`).join('')}</select></div>
+        <div><label>Evento</label><select id="f_evento">${eventoOptionsHtml(opts)}</select></div>
         <div><label>Descrição</label><input type="text" id="f_desc" placeholder="Ex: Massa e recheio"></div>
         <div><label>Categoria</label><input type="text" id="f_cat" placeholder="Ex: Ingredientes"></div>
         <div><label>Quantidade</label><input type="number" step="0.01" min="0" id="f_qtd" placeholder="Ex: 5"></div>
@@ -1534,7 +1575,7 @@ function renderDespesas(c){
   window._filtrosDespesa = window._filtrosDespesa || {evento:''};
   window._despesaSort = window._despesaSort || {key:'data', dir:'desc'};
   const filterWrap = el(`<div class="filters-row">
-    <div><label>Evento</label><select id="filtEventoDespesa"><option value="">Todos</option>${opts.map(o=>`<option value="${o.value}" ${window._filtrosDespesa.evento===o.value?'selected':''}>${o.label}</option>`).join('')}</select></div>
+    <div><label>Evento</label><select id="filtEventoDespesa"><option value="">Todos</option>${eventoOptionsHtml(opts, window._filtrosDespesa.evento)}</select></div>
   </div>`);
   c.appendChild(filterWrap);
   filterWrap.querySelector('#filtEventoDespesa').addEventListener('change', e=>{ window._filtrosDespesa.evento=e.target.value; render(); });
