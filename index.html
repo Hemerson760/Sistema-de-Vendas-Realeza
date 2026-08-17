@@ -237,7 +237,7 @@ const monthLabel = (iso) => { const [y,m] = iso.split('-'); const meses=['Jan','
 function eventoKey(data,tipo){ return data+'|'+tipo; }
 function eventosOptions(){
   return [...DB.eventos].sort((a,b)=>a.data.localeCompare(b.data)).map(e=>({
-    value: eventoKey(e.data,e.tipo), label: `${fmtDateBR(e.data)} — ${e.tipo}`, data:e.data, tipo:e.tipo, cultos:e.cultos, id:e.id
+    value: eventoKey(e.data,e.tipo), label: `${fmtDateBR(e.data)} — ${e.tipo}${e.nomeEvento?` (${e.nomeEvento})`:''}`, data:e.data, tipo:e.tipo, cultos:e.cultos, id:e.id, nomeEvento:e.nomeEvento
   }));
 }
 function eventoOptionsHtml(opts, selectedValue){
@@ -527,7 +527,7 @@ function renderDashboardGeral(c){
   </div></div>`));
 
   c.appendChild(el(`<div class="section-title">Comparativo por Tipo de Evento</div>`));
-  const tipos = ['Almoço','Cantina'];
+  const tipos = [...new Set(DB.eventos.map(e=>e.tipo).filter(Boolean))].sort();
   const compData = tipos.map(t=>({
     tipo:t,
     receita: DB.reservas.filter(r=>r.tipo===t).reduce((s,r)=>s+valorReserva(r),0),
@@ -734,29 +734,98 @@ function renderDashboardEvento(c){
 }
 
 /* ==================== EVENTOS ==================== */
+const TIPOS_EVENTO_PADRAO = ['Almoço','Cantina','Pastel','Outro'];
+
 function renderEventos(c){
   const podeMexer = podeEditar('eventos');
+  let editingEventoId = null;
+  let editingEventoOriginal = null;
+
+  c.appendChild(el(`<div class="section-title" style="${podeMexer?'':'display:none;'}" id="eventoFormTitle">Novo Evento</div>`));
+  const formTitle = c.querySelector('#eventoFormTitle');
   if(podeMexer){
-    c.appendChild(el(`<div class="section-title">Novo Evento</div>`));
+    const tiposSugeridos = [...new Set([...TIPOS_EVENTO_PADRAO, ...DB.eventos.map(e=>e.tipo).filter(Boolean)])];
     const form = el(`<div class="frame">
       <div class="form-grid">
         <div><label>Data</label><input type="date" id="f_data"></div>
-        <div><label>Tipo</label><select id="f_tipo"><option>Almoço</option><option>Cantina</option><option>Outro</option></select></div>
+        <div><label>Tipo</label><input type="text" id="f_tipo" list="tiposEventoList" placeholder="Ex: Almoço, Cantina, Pastel..."></div>
+        <div><label>Nome do Evento (opcional)</label><input type="text" id="f_nome" placeholder="Ex: Culto da Família, Santa Ceia"></div>
         <div><label>Cultos (ex: 17h,19h)</label><input type="text" id="f_cultos" placeholder="17h,19h"></div>
         <div><label>Status</label><select id="f_status"><option>Aberto</option><option>Encerrado</option></select></div>
       </div>
+      <datalist id="tiposEventoList">${tiposSugeridos.map(t=>`<option value="${escapeHtml(t)}">`).join('')}</datalist>
       <button class="btn" id="btnAdd">+ Adicionar Evento</button>
+      <button class="btn secondary" id="btnCancelEditEvento" style="display:none;">Cancelar edição</button>
     </div>`);
     c.appendChild(form);
-    form.querySelector('#btnAdd').addEventListener('click', async ()=>{
-      const data = form.querySelector('#f_data').value;
-      const tipo = form.querySelector('#f_tipo').value;
-      const cultosRaw = form.querySelector('#f_cultos').value;
-      const status = form.querySelector('#f_status').value;
-      if(!data || !cultosRaw.trim()){ alert('Preencha data e cultos.'); return; }
+
+    const dataInput = form.querySelector('#f_data');
+    const tipoInput = form.querySelector('#f_tipo');
+    const nomeInput = form.querySelector('#f_nome');
+    const cultosInput = form.querySelector('#f_cultos');
+    const statusSel = form.querySelector('#f_status');
+    const btnAdd = form.querySelector('#btnAdd');
+    const btnCancelEditEvento = form.querySelector('#btnCancelEditEvento');
+
+    function limparFormEvento(){
+      dataInput.value=''; tipoInput.value=''; nomeInput.value=''; cultosInput.value=''; statusSel.value='Aberto';
+      editingEventoId = null; editingEventoOriginal = null;
+      formTitle.textContent = 'Novo Evento';
+      btnAdd.textContent = '+ Adicionar Evento';
+      btnCancelEditEvento.style.display = 'none';
+    }
+    btnCancelEditEvento.addEventListener('click', limparFormEvento);
+
+    window._carregarEventoParaEdicao = function(ev){
+      editingEventoId = ev.id;
+      editingEventoOriginal = { data: ev.data, tipo: ev.tipo };
+      dataInput.value = ev.data;
+      tipoInput.value = ev.tipo;
+      nomeInput.value = ev.nomeEvento || '';
+      cultosInput.value = (ev.cultos||[]).join(',');
+      statusSel.value = ev.status || 'Aberto';
+      formTitle.textContent = `Editar Evento — ${fmtDateBR(ev.data)}`;
+      btnAdd.textContent = 'Salvar Alterações';
+      btnCancelEditEvento.style.display = 'inline-block';
+      form.scrollIntoView({behavior:'smooth', block:'start'});
+    };
+
+    btnAdd.addEventListener('click', async ()=>{
+      const data = dataInput.value;
+      const tipo = tipoInput.value.trim();
+      const nomeEvento = nomeInput.value.trim();
+      const cultosRaw = cultosInput.value;
+      const status = statusSel.value;
+      if(!data || !tipo || !cultosRaw.trim()){ alert('Preencha data, tipo e cultos.'); return; }
       const cultos = cultosRaw.split(',').map(s=>s.trim()).filter(Boolean);
-      await db.collection('eventos').add({ data, tipo, cultos, status });
-      await auditLog('Criou', 'eventos', `Evento ${fmtDateBR(data)} — ${tipo}`);
+
+      if(editingEventoId){
+        try{
+          await db.collection('eventos').doc(editingEventoId).update({ data, tipo, nomeEvento, cultos, status });
+          await auditLog('Atualizou', 'eventos', `Evento ${fmtDateBR(data)} — ${tipo}${nomeEvento?` (${nomeEvento})`:''} editado`);
+
+          const mudouIdentidade = editingEventoOriginal && (editingEventoOriginal.data!==data || editingEventoOriginal.tipo!==tipo);
+          if(mudouIdentidade){
+            const qtdReservas = DB.reservas.filter(r=>r.data===editingEventoOriginal.data && r.tipo===editingEventoOriginal.tipo).length;
+            const qtdDespesas = DB.despesas.filter(d=>d.data===editingEventoOriginal.data && d.tipo===editingEventoOriginal.tipo).length;
+            if(qtdReservas || qtdDespesas){
+              const sincronizar = confirm(`A data/tipo deste evento mudou de "${fmtDateBR(editingEventoOriginal.data)} — ${editingEventoOriginal.tipo}" para "${fmtDateBR(data)} — ${tipo}".\n\nExistem ${qtdReservas} reserva(s) e ${qtdDespesas} despesa(s) lançadas com os dados antigos. Deseja atualizá-las também para os novos dados?`);
+              if(sincronizar){
+                const reservasAfetadas = DB.reservas.filter(r=>r.data===editingEventoOriginal.data && r.tipo===editingEventoOriginal.tipo);
+                for(const r of reservasAfetadas){ await db.collection('reservas').doc(r.id).update({ data, tipo }); }
+                const despesasAfetadas = DB.despesas.filter(d=>d.data===editingEventoOriginal.data && d.tipo===editingEventoOriginal.tipo);
+                for(const d of despesasAfetadas){ await db.collection('despesas').doc(d.id).update({ data, tipo }); }
+                await auditLog('Atualizou', 'eventos', `${reservasAfetadas.length} reserva(s) e ${despesasAfetadas.length} despesa(s) atualizadas para o novo evento`);
+              }
+            }
+          }
+          limparFormEvento();
+        }catch(e){ alert('Não foi possível salvar a edição.'); console.error(e); }
+        return;
+      }
+
+      await db.collection('eventos').add({ data, tipo, nomeEvento, cultos, status });
+      await auditLog('Criou', 'eventos', `Evento ${fmtDateBR(data)} — ${tipo}${nomeEvento?` (${nomeEvento})`:''}`);
     });
   } else {
     c.appendChild(el(`<div class="small-note" style="margin-bottom:16px;">Você tem acesso apenas para consulta nesta aba. Fale com um administrador se precisar cadastrar ou alterar eventos.</div>`));
@@ -765,14 +834,20 @@ function renderEventos(c){
   c.appendChild(el(`<div class="section-title">Eventos Cadastrados</div>`));
   const list = [...DB.eventos].sort((a,b)=>b.data.localeCompare(a.data));
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
-    <thead><tr><th>Data</th><th>Tipo</th><th>Cultos</th><th>Status</th>${podeMexer?'<th></th>':''}</tr></thead>
+    <thead><tr><th>Data</th><th>Tipo</th><th>Nome do Evento</th><th>Cultos</th><th>Status</th>${podeMexer?'<th></th>':''}</tr></thead>
     <tbody>${list.length? list.map(e=>`<tr data-id="${e.id}">
-      <td>${fmtDateBR(e.data)}</td><td>${e.tipo}</td><td>${(e.cultos||[]).join(', ')}</td>
+      <td>${fmtDateBR(e.data)}</td><td>${escapeHtml(e.tipo)}</td><td>${escapeHtml(e.nomeEvento||'—')}</td><td>${(e.cultos||[]).join(', ')}</td>
       <td><span class="badge ${e.status==='Aberto'?'sim':'nao'}">${e.status}</span></td>
-      ${podeMexer?`<td><button class="btn danger small" data-del="${e.id}">Excluir</button></td>`:''}
-    </tr>`).join('') : '<tr><td colspan="5" class="empty-state">Nenhum evento cadastrado</td></tr>'}</tbody>
+      ${podeMexer?`<td style="white-space:nowrap;"><button class="btn secondary small" data-edit="${e.id}">Editar</button> <button class="btn danger small" data-del="${e.id}">Excluir</button></td>`:''}
+    </tr>`).join('') : '<tr><td colspan="6" class="empty-state">Nenhum evento cadastrado</td></tr>'}</tbody>
   </table></div></div>`);
   c.appendChild(tableWrap);
+  tableWrap.querySelectorAll('[data-edit]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const ev = DB.eventos.find(e=>e.id===btn.dataset.edit);
+      if(ev && window._carregarEventoParaEdicao) window._carregarEventoParaEdicao(ev);
+    });
+  });
   tableWrap.querySelectorAll('[data-del]').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       if(!confirm('Excluir este evento? (reservas/despesas ligadas a ele não serão apagadas)')) return;
