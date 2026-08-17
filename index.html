@@ -236,7 +236,14 @@ const fmtDateBR = (iso) => { if(!iso) return ''; const [y,m,d]=iso.split('-'); r
 const monthLabel = (iso) => { const [y,m] = iso.split('-'); const meses=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return meses[parseInt(m,10)-1] + '/' + y; };
 function eventoKey(data,tipo){ return data+'|'+tipo; }
 function eventosOptions(){
-  return [...DB.eventos].sort((a,b)=>a.data.localeCompare(b.data)).map(e=>({
+  const hojeStr = new Date().toISOString().slice(0,10);
+  return [...DB.eventos].sort((a,b)=>{
+    const aFuturo = a.data >= hojeStr, bFuturo = b.data >= hojeStr;
+    if(aFuturo && !bFuturo) return -1; // futuros/hoje sempre antes dos passados
+    if(!aFuturo && bFuturo) return 1;
+    if(aFuturo && bFuturo) return a.data.localeCompare(b.data); // entre futuros: o mais próximo primeiro
+    return b.data.localeCompare(a.data); // entre passados: o mais recente primeiro
+  }).map(e=>({
     value: eventoKey(e.data,e.tipo), label: `${fmtDateBR(e.data)} — ${e.tipo}${e.nomeEvento?` (${e.nomeEvento})`:''}`, data:e.data, tipo:e.tipo, cultos:e.cultos, id:e.id, nomeEvento:e.nomeEvento
   }));
 }
@@ -1184,11 +1191,12 @@ function renderReservas(c){
     const qtdInput = form.querySelector('#f_qtd');
     const clienteInput = form.querySelector('#f_cliente');
     const telefoneInput = form.querySelector('#f_telefone');
-    clienteInput.addEventListener('input', ()=>{
-      if(telefoneInput.value.trim()) return; // não sobrescreve o que a pessoa já digitou
+    function tentarAutoPreencherTelefone(){
       const cl = DB.clientes.find(x=>normalizarNome(x.nome)===normalizarNome(clienteInput.value));
-      if(cl && cl.contato) telefoneInput.value = cl.contato;
-    });
+      if(cl && cl.contato){ telefoneInput.value = cl.contato; }
+    }
+    clienteInput.addEventListener('input', tentarAutoPreencherTelefone);
+    clienteInput.addEventListener('change', tentarAutoPreencherTelefone);
     const pagtoSel = form.querySelector('#f_pagto');
     const pagoSel = form.querySelector('#f_pago');
     const entregueSel = form.querySelector('#f_entregue');
