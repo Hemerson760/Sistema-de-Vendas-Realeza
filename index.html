@@ -1454,6 +1454,10 @@ function renderReservas(c){
     const va = reservaSortValue(a, window._reservaSort.key);
     const vb = reservaSortValue(b, window._reservaSort.key);
     let cmp = (typeof va==='number' && typeof vb==='number') ? va-vb : String(va).localeCompare(String(vb));
+    if(cmp===0 && window._reservaSort.key!=='cliente'){
+      // desempate por cliente — evita a sensação de "não mudou nada" quando vários pedidos têm o mesmo valor (ex: mesma data/evento)
+      cmp = normalizarNome(a.cliente).localeCompare(normalizarNome(b.cliente));
+    }
     return window._reservaSort.dir==='asc' ? cmp : -cmp;
   });
 
