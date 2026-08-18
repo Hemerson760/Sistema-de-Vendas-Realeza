@@ -112,6 +112,9 @@ tbody tr.pend{ background: #FBF0EC; }
 .acoes-row button{ background:none; border:none; padding:0; font-family:'Inter',sans-serif; font-size:11.5px; font-weight:700; color:var(--gold); cursor:pointer; }
 .acoes-row button.excluir{ color:var(--warn); margin-left:auto; }
 .acoes-row button.confirmado{ color:var(--ok); }
+.horarios-colunas{ display:grid; gap:16px; align-items:start; }
+.horario-coluna-titulo{ font-family:'Playfair Display',serif; font-style:italic; font-weight:600; font-size:15px; color:var(--gold); border-bottom:1px solid var(--line); padding-bottom:6px; margin-bottom:10px; }
+@media (max-width: 760px){ .horarios-colunas{ grid-template-columns: 1fr !important; } }
 
 .btn{ font-family:'Inter',sans-serif; font-size:12px; font-weight:600; padding:8px 16px; border-radius:5px; border:1px solid var(--gold); background: var(--gold); color:#fff; cursor:pointer; letter-spacing:.2px; }
 .btn.secondary{ background: transparent; color: var(--ink); border-color: var(--line); }
@@ -708,7 +711,10 @@ function renderDashboardEvento(c){
     <tbody>${ranking.length? ranking.map(r=>`<tr><td>${escapeHtml(r[0])}</td><td>${r[1].qtd}</td><td>${fmtMoney(r[1].valor)}</td><td>${fmtPct(totalVendido? r[1].valor/totalVendido*100:0)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty-state">Sem pedidos neste evento ainda</td></tr>'}</tbody>
   </table></div></div>`));
 
-  const itensComLimite = DB.cardapio.filter(i=>i.limite!==null && i.limite!==undefined && i.limite>0);
+  const itensComLimite = DB.cardapio.filter(i=>
+    (i.limite!==null && i.limite!==undefined && i.limite>0) &&
+    (!(i.eventosVinculados||[]).length || i.eventosVinculados.includes(sel.id))
+  );
   if(itensComLimite.length){
     const somaLimites = itensComLimite.reduce((s,i)=>s+i.limite,0);
     const custoPorUnidade = somaLimites>0 ? totalDespesa/somaLimites : 0;
@@ -1416,14 +1422,14 @@ function renderReservas(c){
     <div><label>Pago?</label><select id="filtPago"><option value="">Todos</option><option ${window._filtros.pago==='Sim'?'selected':''}>Sim</option><option ${window._filtros.pago==='Não'?'selected':''}>Não</option></select></div>
     <div><label>Entregue?</label><select id="filtEntregue"><option value="">Todos</option><option ${window._filtros.entregue==='Sim'?'selected':''}>Sim</option><option ${window._filtros.entregue==='Não'?'selected':''}>Não</option></select></div>
     <div><label>Ordenar por</label><select id="ordCampo">${SORT_OPCOES.map(o=>`<option value="${o.key}" ${window._reservaSort.key===o.key?'selected':''}>${o.label}</option>`).join('')}</select></div>
-    <div><label>Direção</label><button class="btn secondary small" id="btnOrdDir" type="button">${window._reservaSort.dir==='asc'?'▲ Crescente':'▼ Decrescente'}</button></div>
+    <div><label>Direção</label><select id="ordDir"><option value="asc" ${window._reservaSort.dir==='asc'?'selected':''}>▲ Crescente</option><option value="desc" ${window._reservaSort.dir==='desc'?'selected':''}>▼ Decrescente</option></select></div>
   </div>`);
   c.appendChild(filterWrap);
   filterWrap.querySelector('#filtEvento').addEventListener('change', e=>{ window._filtros.evento=e.target.value; render(); });
   filterWrap.querySelector('#filtPago').addEventListener('change', e=>{ window._filtros.pago=e.target.value; render(); });
   filterWrap.querySelector('#filtEntregue').addEventListener('change', e=>{ window._filtros.entregue=e.target.value; render(); });
   filterWrap.querySelector('#ordCampo').addEventListener('change', e=>{ window._reservaSort.key=e.target.value; render(); });
-  filterWrap.querySelector('#btnOrdDir').addEventListener('click', ()=>{ window._reservaSort.dir = window._reservaSort.dir==='asc'?'desc':'asc'; render(); });
+  filterWrap.querySelector('#ordDir').addEventListener('change', e=>{ window._reservaSort.dir=e.target.value; render(); });
 
   let list = [...DB.reservas];
   if(window._filtros.evento){ const [d,t]=window._filtros.evento.split('|'); list = list.filter(r=>r.data===d && r.tipo===t); }
@@ -1479,14 +1485,7 @@ function renderReservas(c){
   const comParticularidade = list.filter(r=>(r.observacao&&r.observacao.trim()) || (r.opcoesTexto&&r.opcoesTexto.trim()));
   const semParticularidade = list.filter(r=>!((r.observacao&&r.observacao.trim()) || (r.opcoesTexto&&r.opcoesTexto.trim())));
 
-  const groupContainer = el(`<div></div>`);
-
-  if(comParticularidade.length){
-    groupContainer.appendChild(el(`<div class="section-title" style="color:var(--warn);">⚠️ Pedidos com Particularidades — Atenção na Montagem <span class="small-note" style="margin:0 0 0 8px;">(${comParticularidade.length})</span></div>`));
-    groupContainer.appendChild(el(`<div>${comParticularidade.map(reservaCardHtml).join('')}</div>`));
-  }
-
-  // se o evento filtrado tiver mais de um horário, separa visualmente os pedidos (sem particularidade) por horário
+  // se o evento filtrado tiver mais de um horário, separa visualmente os pedidos (com e sem particularidade) em colunas por horário
   let horariosDoEventoFiltrado = null;
   if(window._filtros.evento){
     const [d,t] = window._filtros.evento.split('|');
@@ -1494,24 +1493,35 @@ function renderReservas(c){
     if(evObj && (evObj.cultos||[]).length>1) horariosDoEventoFiltrado = evObj.cultos;
   }
 
+  function montarBlocoPorHorario(itemsList, textoVazio){
+    if(!horariosDoEventoFiltrado){
+      return el(`<div>${itemsList.length ? itemsList.map(reservaCardHtml).join('') : `<div class="frame empty-state">${textoVazio}</div>`}</div>`);
+    }
+    const gruposUsados = [...horariosDoEventoFiltrado];
+    itemsList.forEach(r=>{ if(!gruposUsados.includes(r.horario)) gruposUsados.push(r.horario); });
+    const grid = el(`<div class="horarios-colunas" style="grid-template-columns:repeat(${gruposUsados.length},1fr);"></div>`);
+    gruposUsados.forEach(hor=>{
+      const rows = itemsList.filter(r=>r.horario===hor);
+      const col = el(`<div class="horario-coluna"></div>`);
+      col.appendChild(el(`<div class="horario-coluna-titulo">🕒 ${escapeHtml(hor)} <span class="small-note" style="margin:0 0 0 6px;">(${rows.length})</span></div>`));
+      if(rows.length){ rows.forEach(r=>col.appendChild(el(reservaCardHtml(r)))); }
+      else { col.appendChild(el(`<div class="frame empty-state" style="padding:16px;">${textoVazio}</div>`)); }
+      grid.appendChild(col);
+    });
+    return grid;
+  }
+
+  const groupContainer = el(`<div></div>`);
+
+  if(comParticularidade.length){
+    groupContainer.appendChild(el(`<div class="section-title" style="color:var(--warn);">⚠️ Pedidos com Particularidades — Atenção na Montagem <span class="small-note" style="margin:0 0 0 8px;">(${comParticularidade.length})</span></div>`));
+    groupContainer.appendChild(montarBlocoPorHorario(comParticularidade, 'Nenhuma particularidade neste horário'));
+  }
+
   if(comParticularidade.length || semParticularidade.length){
     groupContainer.appendChild(el(`<div class="section-title" style="margin-top:20px;">Demais Pedidos</div>`));
   }
-  if(horariosDoEventoFiltrado){
-    const gruposUsados = [...horariosDoEventoFiltrado];
-    semParticularidade.forEach(r=>{ if(!gruposUsados.includes(r.horario)) gruposUsados.push(r.horario); });
-    let algumGrupo = false;
-    gruposUsados.forEach(hor=>{
-      const rows = semParticularidade.filter(r=>r.horario===hor);
-      if(!rows.length) return;
-      algumGrupo = true;
-      groupContainer.appendChild(el(`<div class="section-title" style="margin-top:14px; font-size:16px;">🕒 Horário: ${escapeHtml(hor)} <span class="small-note" style="margin:0 0 0 8px;">(${rows.length} pedido${rows.length!==1?'s':''})</span></div>`));
-      groupContainer.appendChild(el(`<div>${rows.map(reservaCardHtml).join('')}</div>`));
-    });
-    if(!algumGrupo){ groupContainer.appendChild(el(`<div class="frame empty-state">Nenhum pedido encontrado</div>`)); }
-  } else {
-    groupContainer.appendChild(el(`<div>${semParticularidade.length? semParticularidade.map(reservaCardHtml).join('') : '<div class="frame empty-state">Nenhum pedido encontrado</div>'}</div>`));
-  }
+  groupContainer.appendChild(montarBlocoPorHorario(semParticularidade, 'Nenhum pedido encontrado'));
   c.appendChild(groupContainer);
   const tableWrap = groupContainer;
 
