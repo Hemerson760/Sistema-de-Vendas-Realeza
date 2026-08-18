@@ -95,6 +95,24 @@ tbody tr.pend{ background: #FBF0EC; }
 .badge.acao-excluiu{ background:#F7E9E5; color: var(--warn); }
 .obs-flag{ background:#FBF3DE; border-left:2px solid var(--gold); padding:3px 8px; font-size:12.5px; border-radius: 0 4px 4px 0; }
 
+.pedido-card{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin-bottom:12px; box-shadow:var(--shadow); }
+.pedido-card.destaque{ border:2px solid var(--warn); background:#FFFAF8; }
+.pedido-topo{ display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:6px; gap:10px; flex-wrap:wrap; }
+.pedido-cliente{ font-family:'Playfair Display',serif; font-style:italic; font-weight:600; font-size:16px; color:var(--ink); }
+.pedido-hora{ font-family:'Inter',sans-serif; font-size:11px; color:var(--ink-soft); white-space:nowrap; padding-top:3px; }
+.pedido-item-linha{ font-family:'Inter',sans-serif; font-size:14px; margin-bottom:4px; display:flex; justify-content:space-between; gap:10px; }
+.pedido-item-linha .valor{ font-weight:700; color:var(--gold); white-space:nowrap; }
+.pedido-meta{ font-family:'Inter',sans-serif; font-size:11.5px; color:var(--ink-soft); margin-bottom:8px; }
+.obs-box{ background:#FBF3DE; border-left:3px solid var(--gold); padding:6px 10px; font-size:12.5px; margin-bottom:8px; border-radius:0 5px 5px 0; }
+.obs-box.warn{ background:#FBEAE6; border-left-color:var(--warn); color:var(--warn); font-weight:600; }
+.pills-row{ display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
+.pill-toggle{ font-family:'Inter',sans-serif; font-size:11.5px; font-weight:700; padding:7px 13px; border-radius:20px; border:1.5px solid var(--line); background:#fff; color:var(--ink-soft); cursor:pointer; transition: all .15s ease; }
+.pill-toggle.on{ background:var(--ok); border-color:var(--ok); color:#fff; }
+.acoes-row{ display:flex; flex-wrap:wrap; align-items:center; gap:16px; border-top:1px solid var(--line); padding-top:9px; margin-top:2px; }
+.acoes-row button{ background:none; border:none; padding:0; font-family:'Inter',sans-serif; font-size:11.5px; font-weight:700; color:var(--gold); cursor:pointer; }
+.acoes-row button.excluir{ color:var(--warn); margin-left:auto; }
+.acoes-row button.confirmado{ color:var(--ok); }
+
 .btn{ font-family:'Inter',sans-serif; font-size:12px; font-weight:600; padding:8px 16px; border-radius:5px; border:1px solid var(--gold); background: var(--gold); color:#fff; cursor:pointer; letter-spacing:.2px; }
 .btn.secondary{ background: transparent; color: var(--ink); border-color: var(--line); }
 .btn.danger{ background: transparent; border-color: var(--warn); color: var(--warn); }
@@ -1388,15 +1406,24 @@ function renderReservas(c){
   c.appendChild(el(`<div class="section-title">Pedidos Lançados</div>`));
   window._filtros = window._filtros || {evento:'', pago:'', entregue:''};
   window._reservaSort = window._reservaSort || {key:'data', dir:'desc'};
+  const SORT_OPCOES = [
+    {key:'data', label:'Data'}, {key:'cliente', label:'Cliente'}, {key:'item', label:'Item'},
+    {key:'qtd', label:'Quantidade'}, {key:'valor', label:'Valor'}, {key:'pago', label:'Pago'},
+    {key:'entregue', label:'Entregue'}, {key:'montada', label:'Montada'}, {key:'vendedor', label:'Lançado por'},
+  ];
   const filterWrap = el(`<div class="filters-row">
     <div><label>Evento</label><select id="filtEvento"><option value="">Todos</option>${eventoOptionsHtml(opts, window._filtros.evento)}</select></div>
     <div><label>Pago?</label><select id="filtPago"><option value="">Todos</option><option ${window._filtros.pago==='Sim'?'selected':''}>Sim</option><option ${window._filtros.pago==='Não'?'selected':''}>Não</option></select></div>
     <div><label>Entregue?</label><select id="filtEntregue"><option value="">Todos</option><option ${window._filtros.entregue==='Sim'?'selected':''}>Sim</option><option ${window._filtros.entregue==='Não'?'selected':''}>Não</option></select></div>
+    <div><label>Ordenar por</label><select id="ordCampo">${SORT_OPCOES.map(o=>`<option value="${o.key}" ${window._reservaSort.key===o.key?'selected':''}>${o.label}</option>`).join('')}</select></div>
+    <div><label>Direção</label><button class="btn secondary small" id="btnOrdDir" type="button">${window._reservaSort.dir==='asc'?'▲ Crescente':'▼ Decrescente'}</button></div>
   </div>`);
   c.appendChild(filterWrap);
   filterWrap.querySelector('#filtEvento').addEventListener('change', e=>{ window._filtros.evento=e.target.value; render(); });
   filterWrap.querySelector('#filtPago').addEventListener('change', e=>{ window._filtros.pago=e.target.value; render(); });
   filterWrap.querySelector('#filtEntregue').addEventListener('change', e=>{ window._filtros.entregue=e.target.value; render(); });
+  filterWrap.querySelector('#ordCampo').addEventListener('change', e=>{ window._reservaSort.key=e.target.value; render(); });
+  filterWrap.querySelector('#btnOrdDir').addEventListener('click', ()=>{ window._reservaSort.dir = window._reservaSort.dir==='asc'?'desc':'asc'; render(); });
 
   let list = [...DB.reservas];
   if(window._filtros.evento){ const [d,t]=window._filtros.evento.split('|'); list = list.filter(r=>r.data===d && r.tipo===t); }
@@ -1406,13 +1433,10 @@ function renderReservas(c){
   function reservaSortValue(r, key){
     switch(key){
       case 'data': return r.data + ' ' + r.horario;
-      case 'tipo': return r.tipo||'';
-      case 'horario': return r.horario||'';
       case 'cliente': return normalizarNome(r.cliente);
       case 'item': return r.item||'';
       case 'qtd': return r.qtd||0;
       case 'valor': return valorReserva(r);
-      case 'pagto': return r.formaPagamento||'';
       case 'pago': return r.pago||'';
       case 'entregue': return r.entregue||'';
       case 'montada': return r.montada||'Não';
@@ -1427,43 +1451,29 @@ function renderReservas(c){
     return window._reservaSort.dir==='asc' ? cmp : -cmp;
   });
 
-  function reservaRowHtml(r){
-    return `<tr data-id="${r.id}" class="${(r.pago==='Não'||r.entregue==='Não')?'pend':''}">
-      <td>${fmtDateBR(r.data)}</td><td>${r.tipo}</td><td>${r.horario}</td><td>${escapeHtml(r.cliente)}${whatsappBtn(contatoDoCliente(r.cliente))}</td>
-      <td>${escapeHtml(r.item)}</td><td>${r.qtd}</td><td>${fmtMoney(valorReserva(r))}</td>
-      <td>${r.opcoesTexto?`<span class="obs-flag">${escapeHtml(r.opcoesTexto)}</span><br>`:''}${r.observacao?`<span class="obs-flag">${escapeHtml(r.observacao)}</span>`:''}</td>
-      <td>${r.formaPagamento}</td>
-      <td><span class="badge ${r.pago==='Sim'?'sim':'nao'}">${r.pago}</span></td>
-      <td><span class="badge ${r.entregue==='Sim'?'sim':'nao'}">${r.entregue}</span></td>
-      <td><span class="badge ${r.montada==='Sim'?'sim':'nao'}">${r.montada==='Sim'?'Sim':'Não'}</span></td>
-      <td>${escapeHtml(r.vendedor||'')}</td>
-      <td style="white-space:nowrap;">
-        <button class="btn secondary small" data-editreserva="${r.id}">Editar Reserva</button>
-        <button class="btn secondary small" data-pago="${r.id}">${r.pago==='Sim'?'Marcar Não Pago':'Marcar Pago'}</button>
-        <button class="btn secondary small" data-montada="${r.id}">${r.montada==='Sim'?'Desfazer Montagem':'Marcar Montada'}</button>
-        <button class="btn secondary small" data-ent="${r.id}">${r.entregue==='Sim'?'Desfazer Entrega':'Marcar Entregue'}</button>
-        <button class="btn secondary small" data-confirmar="${r.id}" style="${r.confirmadoEm?'border-color:var(--ok); color:var(--ok);':''}">${r.confirmadoEm?'✓ Reenviar Aviso':'Confirmar e Avisar Cliente'}</button>
-        <button class="btn danger small" data-del="${r.id}">Excluir</button>
-      </td>
-    </tr>`;
+  function reservaCardHtml(r){
+    const temObs = (r.observacao&&r.observacao.trim()) || (r.opcoesTexto&&r.opcoesTexto.trim());
+    return `<div class="pedido-card ${temObs?'destaque':''}" data-id="${r.id}">
+      <div class="pedido-topo">
+        <div class="pedido-cliente">${escapeHtml(r.cliente)}${whatsappBtn(contatoDoCliente(r.cliente))}</div>
+        <div class="pedido-hora">${fmtDateBR(r.data)} · ${r.tipo} · ${r.horario}</div>
+      </div>
+      <div class="pedido-item-linha"><span>${escapeHtml(r.item)} × ${r.qtd}</span><span class="valor">${fmtMoney(valorReserva(r))}</span></div>
+      <div class="pedido-meta">${r.formaPagamento} · Lançado por ${escapeHtml(r.vendedor||'')}</div>
+      ${r.opcoesTexto?`<div class="obs-box">${escapeHtml(r.opcoesTexto)}</div>`:''}
+      ${r.observacao?`<div class="obs-box warn">⚠️ ${escapeHtml(r.observacao)}</div>`:''}
+      <div class="pills-row">
+        <button type="button" class="pill-toggle ${r.pago==='Sim'?'on':''}" data-pago="${r.id}">${r.pago==='Sim'?'✓ Pago':'Pago: Não'}</button>
+        <button type="button" class="pill-toggle ${r.entregue==='Sim'?'on':''}" data-ent="${r.id}">${r.entregue==='Sim'?'✓ Entregue':'Entregue: Não'}</button>
+        <button type="button" class="pill-toggle ${r.montada==='Sim'?'on':''}" data-montada="${r.id}">${r.montada==='Sim'?'✓ Montada':'Montada: Não'}</button>
+      </div>
+      <div class="acoes-row">
+        <button type="button" data-editreserva="${r.id}">Editar</button>
+        <button type="button" data-confirmar="${r.id}" class="${r.confirmadoEm?'confirmado':''}">${r.confirmadoEm?'✓ Avisado (reenviar)':'Avisar Cliente'}</button>
+        <button type="button" class="excluir" data-del="${r.id}">Excluir</button>
+      </div>
+    </div>`;
   }
-
-  const SORT_COLS = [
-    {key:'data', label:'Data'}, {key:'tipo', label:'Tipo'}, {key:'horario', label:'Hor.'},
-    {key:'cliente', label:'Cliente'}, {key:'item', label:'Item'}, {key:'qtd', label:'Qtd'},
-    {key:'valor', label:'Valor'}, {key:null, label:'Opções/Obs.'}, {key:'pagto', label:'Pagto'},
-    {key:'pago', label:'Pago'}, {key:'entregue', label:'Entregue'}, {key:'montada', label:'Montada'},
-    {key:'vendedor', label:'Lançado por'}, {key:null, label:''},
-  ];
-  function buildThead(){
-    return `<thead><tr>${SORT_COLS.map(col=>{
-      if(!col.key) return `<th>${col.label}</th>`;
-      const ativo = window._reservaSort.key===col.key;
-      const seta = ativo ? (window._reservaSort.dir==='asc'?' ▲':' ▼') : '';
-      return `<th data-sortcol="${col.key}" style="cursor:pointer; user-select:none;" title="Clique para ordenar">${col.label}${seta}</th>`;
-    }).join('')}</tr></thead>`;
-  }
-  const theadHtml = buildThead();
 
   // separa em destaque, no topo, todo pedido com observação ou particularidade — pra não passar batido na montagem
   const comParticularidade = list.filter(r=>(r.observacao&&r.observacao.trim()) || (r.opcoesTexto&&r.opcoesTexto.trim()));
@@ -1473,7 +1483,7 @@ function renderReservas(c){
 
   if(comParticularidade.length){
     groupContainer.appendChild(el(`<div class="section-title" style="color:var(--warn);">⚠️ Pedidos com Particularidades — Atenção na Montagem <span class="small-note" style="margin:0 0 0 8px;">(${comParticularidade.length})</span></div>`));
-    groupContainer.appendChild(el(`<div class="frame" style="padding:0; border:2px solid var(--warn);"><div class="table-wrap"><table>${theadHtml}<tbody>${comParticularidade.map(reservaRowHtml).join('')}</tbody></table></div></div>`));
+    groupContainer.appendChild(el(`<div>${comParticularidade.map(reservaCardHtml).join('')}</div>`));
   }
 
   // se o evento filtrado tiver mais de um horário, separa visualmente os pedidos (sem particularidade) por horário
@@ -1484,7 +1494,9 @@ function renderReservas(c){
     if(evObj && (evObj.cultos||[]).length>1) horariosDoEventoFiltrado = evObj.cultos;
   }
 
-  groupContainer.appendChild(el(`<div class="section-title" style="margin-top:20px;">Demais Pedidos</div>`));
+  if(comParticularidade.length || semParticularidade.length){
+    groupContainer.appendChild(el(`<div class="section-title" style="margin-top:20px;">Demais Pedidos</div>`));
+  }
   if(horariosDoEventoFiltrado){
     const gruposUsados = [...horariosDoEventoFiltrado];
     semParticularidade.forEach(r=>{ if(!gruposUsados.includes(r.horario)) gruposUsados.push(r.horario); });
@@ -1494,23 +1506,14 @@ function renderReservas(c){
       if(!rows.length) return;
       algumGrupo = true;
       groupContainer.appendChild(el(`<div class="section-title" style="margin-top:14px; font-size:16px;">🕒 Horário: ${escapeHtml(hor)} <span class="small-note" style="margin:0 0 0 8px;">(${rows.length} pedido${rows.length!==1?'s':''})</span></div>`));
-      groupContainer.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>${buildThead()}<tbody>${rows.map(reservaRowHtml).join('')}</tbody></table></div></div>`));
+      groupContainer.appendChild(el(`<div>${rows.map(reservaCardHtml).join('')}</div>`));
     });
     if(!algumGrupo){ groupContainer.appendChild(el(`<div class="frame empty-state">Nenhum pedido encontrado</div>`)); }
   } else {
-    groupContainer.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>${theadHtml}
-      <tbody>${semParticularidade.length? semParticularidade.map(reservaRowHtml).join('') : '<tr><td colspan="14" class="empty-state">Nenhum pedido encontrado</td></tr>'}</tbody>
-    </table></div></div>`));
+    groupContainer.appendChild(el(`<div>${semParticularidade.length? semParticularidade.map(reservaCardHtml).join('') : '<div class="frame empty-state">Nenhum pedido encontrado</div>'}</div>`));
   }
   c.appendChild(groupContainer);
   const tableWrap = groupContainer;
-
-  tableWrap.querySelectorAll('[data-sortcol]').forEach(th=>th.addEventListener('click', ()=>{
-    const key = th.dataset.sortcol;
-    if(window._reservaSort.key===key){ window._reservaSort.dir = window._reservaSort.dir==='asc'?'desc':'asc'; }
-    else { window._reservaSort = {key, dir:'asc'}; }
-    render();
-  }));
 
   tableWrap.querySelectorAll('[data-editreserva]').forEach(btn=>btn.addEventListener('click', ()=>{
     const r = DB.reservas.find(x=>x.id===btn.dataset.editreserva);
