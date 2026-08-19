@@ -105,6 +105,7 @@ tbody tr.pend{ background: #FBF0EC; }
 .pedido-meta{ font-family:'Inter',sans-serif; font-size:11.5px; color:var(--ink-soft); margin-bottom:8px; }
 .obs-box{ background:#FBF3DE; border-left:3px solid var(--gold); padding:6px 10px; font-size:12.5px; margin-bottom:8px; border-radius:0 5px 5px 0; }
 .obs-box.warn{ background:#FBEAE6; border-left-color:var(--warn); color:var(--warn); font-weight:600; }
+.obs-box.ajuste{ background:#F1EEE3; border-left-color:var(--ink-soft); color:var(--ink); }
 .pills-row{ display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
 .pill-toggle{ font-family:'Inter',sans-serif; font-size:11.5px; font-weight:700; padding:7px 13px; border-radius:20px; border:1.5px solid var(--line); background:#fff; color:var(--ink-soft); cursor:pointer; transition: all .15s ease; }
 .pill-toggle.on{ background:var(--ok); border-color:var(--ok); color:#fff; }
@@ -323,7 +324,7 @@ async function salvarContatoCliente(nome, telefone){
   }catch(e){ console.error('Falha ao salvar contato do cliente', e); }
 }
 
-function normalizarNome(s){ return (s||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().trim(); }
+function normalizarNome(s){ return (s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim(); }
 function levenshtein(a,b){
   const m=a.length, n=b.length;
   const dp = Array.from({length:m+1},()=>new Array(n+1).fill(0));
@@ -937,6 +938,28 @@ function calcularValorTotalDetalhado(item, qtd, dataRef){
   return { total, texto: partes.join(' + ') };
 }
 
+/* ---- Ajuste manual (desconto/acréscimo) sobre o valor de uma reserva ----
+   Permite corrigir o valor calculado pelo cardápio quando, na prática, o
+   pedido saiu diferente do preço de tabela (ex: acréscimo por ingrediente
+   extra, ou desconto para vender as últimas unidades). Pode ser aplicado
+   tanto em pedidos novos quanto em pedidos já lançados (edição). */
+function calcularAjusteValor(tipo, valorDigitado, qtd, totalBase){
+  const v = Number(valorDigitado);
+  if(!tipo || tipo==='nenhum' || isNaN(v) || v===0) return 0;
+  let resultado = 0;
+  if(tipo==='valorUnidade') resultado = v * (Number(qtd)||0);
+  else if(tipo==='percentual') resultado = (Number(totalBase)||0) * (v/100);
+  else resultado = v; // 'valor' = fixo sobre o total do pedido
+  return Math.round(resultado*100)/100;
+}
+function descreverAjuste(tipo, valorDigitado, ajusteAplicado){
+  if(!ajusteAplicado) return '';
+  const sinalTxt = ajusteAplicado>0 ? 'Acréscimo' : 'Desconto';
+  if(tipo==='percentual') return `${sinalTxt} de ${fmtPct(Math.abs(Number(valorDigitado)||0))} (${fmtMoney(Math.abs(ajusteAplicado))})`;
+  if(tipo==='valorUnidade') return `${sinalTxt} de ${fmtMoney(Math.abs(Number(valorDigitado)||0))}/un (${fmtMoney(Math.abs(ajusteAplicado))} no total)`;
+  return `${sinalTxt} de ${fmtMoney(Math.abs(ajusteAplicado))}`;
+}
+
 function renderCardapio(c){
   const podeMexer = podeEditar('cardapio');
   const cardFormState = { faixas: [], opcoes: [], eventosVinculados: [], editingId: null };
@@ -1194,10 +1217,19 @@ function renderReservas(c){
         <div><label>Telefone/WhatsApp *</label><input type="text" id="f_telefone" placeholder="(11) 91234-5678"></div>
         <div><label>Item</label><select id="f_item"></select></div>
         <div><label>Quantidade</label><input type="number" min="1" value="1" id="f_qtd"></div>
+        <div><label>Tipo de Ajuste</label><select id="f_ajusteTipo">
+          <option value="nenhum">Sem ajuste</option>
+          <option value="valor">R$ fixo — total do pedido</option>
+          <option value="valorUnidade">R$ fixo — por unidade</option>
+          <option value="percentual">% sobre o total</option>
+        </select></div>
+        <div><label>Valor do Ajuste</label><input type="number" step="0.01" value="0" id="f_ajusteValor" placeholder="Ex: -2 ou 5"></div>
         <div><label>Forma de Pagamento</label><select id="f_pagto"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
         <div><label>Pago?</label><select id="f_pago"><option>Não</option><option>Sim</option></select></div>
         <div><label>Entregue?</label><select id="f_entregue"><option>Não</option><option>Sim</option></select></div>
       </div>
+      <div class="small-note" style="margin-top:-10px; margin-bottom:12px;">No ajuste, use valor <strong>negativo</strong> pra desconto (ex: -2) e <strong>positivo</strong> pra acréscimo (ex: 5). Deixe "Sem ajuste" se o preço do cardápio/pacote já está correto — use isso pra casos pontuais, como um ingrediente extra ou uma queima de estoque.</div>
+      <div style="margin-bottom:12px;"><label>Motivo do ajuste (opcional)</label><input type="text" id="f_ajusteMotivo" placeholder="Ex: carne extra no hambúrguer, últimas unidades..."></div>
       <div class="small-note" id="precoPreview" style="margin-bottom:4px;"></div>
       <div class="small-note" id="limitePreview" style="margin-bottom:14px;"></div>
       <div id="opcoesItemWrap"></div>
@@ -1213,6 +1245,9 @@ function renderReservas(c){
     const horSel = form.querySelector('#f_horario');
     const itemSel = form.querySelector('#f_item');
     const qtdInput = form.querySelector('#f_qtd');
+    const ajusteTipoSel = form.querySelector('#f_ajusteTipo');
+    const ajusteValorInput = form.querySelector('#f_ajusteValor');
+    const ajusteMotivoInput = form.querySelector('#f_ajusteMotivo');
     const clienteInput = form.querySelector('#f_cliente');
     const telefoneInput = form.querySelector('#f_telefone');
     function tentarAutoPreencherTelefone(){
@@ -1277,8 +1312,11 @@ function renderReservas(c){
       const qtd = parseInt(qtdInput.value,10) || 0;
       if(!item){ precoPreview.innerHTML=''; limitePreview.innerHTML=''; return; }
       const selAtual = opts.find(o=>o.value===evSel.value);
-      const { total, texto } = calcularValorTotalDetalhado(item, qtd, selAtual?selAtual.data:null);
-      precoPreview.innerHTML = qtd>0 ? `<strong>Total do pedido: ${fmtMoney(total)}</strong> <span style="color:var(--ink-soft);">(${fmtMoney(qtd?total/qtd:0)} em média por unidade)</span>${texto?`<br>cálculo: ${escapeHtml(texto)}`:''}` : '';
+      const { total: totalBase, texto } = calcularValorTotalDetalhado(item, qtd, selAtual?selAtual.data:null);
+      const ajusteAplicado = calcularAjusteValor(ajusteTipoSel.value, ajusteValorInput.value, qtd, totalBase);
+      const totalFinal = Math.round((totalBase + ajusteAplicado)*100)/100;
+      const ajusteTxt = ajusteAplicado ? `<br>${descreverAjuste(ajusteTipoSel.value, ajusteValorInput.value, ajusteAplicado)} → <strong>total final: ${fmtMoney(totalFinal)}</strong>` : '';
+      precoPreview.innerHTML = qtd>0 ? `<strong>Total do cardápio: ${fmtMoney(totalBase)}</strong> <span style="color:var(--ink-soft);">(${fmtMoney(qtd?totalBase/qtd:0)} em média por unidade)</span>${texto?`<br>cálculo: ${escapeHtml(texto)}`:''}${ajusteTxt}` : '';
       if(item.limite!==null && item.limite!==undefined && item.limite>0){
         const jaReservado = jaReservadoNoEvento(item);
         const depois = jaReservado + qtd;
@@ -1292,12 +1330,15 @@ function renderReservas(c){
 
     itemSel.addEventListener('change', ()=>{ refreshOpcoesItem(); refreshPrecoPreview(); });
     qtdInput.addEventListener('input', refreshPrecoPreview);
+    ajusteTipoSel.addEventListener('change', refreshPrecoPreview);
+    ajusteValorInput.addEventListener('input', refreshPrecoPreview);
     refreshOpcoesItem(); refreshPrecoPreview();
 
     function limparFormReserva(){
       evSel.selectedIndex = 0; refreshHorarios(); refreshItemOptions();
       clienteInput.value = ''; telefoneInput.value = ''; itemSel.selectedIndex = 0;
       qtdInput.value = '1'; pagtoSel.value='Dinheiro'; pagoSel.value='Não'; entregueSel.value='Não';
+      ajusteTipoSel.value = 'nenhum'; ajusteValorInput.value = '0'; ajusteMotivoInput.value = '';
       obsInput.value = '';
       editingReservaId = null;
       formTitle.textContent = 'Nova Reserva / Pedido';
@@ -1317,6 +1358,9 @@ function renderReservas(c){
       const itemMatch = DB.cardapio.find(i=>i.item===r.item);
       if(itemMatch) itemSel.value = itemMatch.id;
       qtdInput.value = r.qtd;
+      ajusteTipoSel.value = r.ajusteTipo || 'nenhum';
+      ajusteValorInput.value = (r.ajusteValor!==undefined && r.ajusteValor!==null) ? r.ajusteValor : 0;
+      ajusteMotivoInput.value = r.ajusteMotivo || '';
       pagtoSel.value = r.formaPagamento || 'Dinheiro';
       pagoSel.value = r.pago || 'Não';
       entregueSel.value = r.entregue || 'Não';
@@ -1379,12 +1423,21 @@ function renderReservas(c){
         }
       }
       const opcoesTexto = Object.entries(opcoesSelecionadas).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join('/'):v}`).join('; ');
-      const valorTotal = calcularValorTotal(itemObj, qtd, sel.data);
+      const valorTotalBase = calcularValorTotal(itemObj, qtd, sel.data);
+      const ajusteTipo = ajusteTipoSel.value;
+      const ajusteValor = parseFloat(ajusteValorInput.value) || 0;
+      const ajusteAplicado = calcularAjusteValor(ajusteTipo, ajusteValor, qtd, valorTotalBase);
+      const ajusteMotivo = ajusteMotivoInput.value.trim();
+      const valorTotal = Math.round((valorTotalBase + ajusteAplicado)*100)/100;
       const precoUnit = qtd ? valorTotal/qtd : 0;
 
       const dadosReserva = {
         data: sel.data, tipo: sel.tipo, horario: horSel.value,
         cliente, item: itemObj.item, qtd, precoUnit, valorTotal,
+        ajusteTipo: ajusteAplicado ? ajusteTipo : 'nenhum',
+        ajusteValor: ajusteAplicado ? ajusteValor : 0,
+        ajusteAplicado,
+        ajusteMotivo: ajusteAplicado ? ajusteMotivo : '',
         opcoesSelecionadas, opcoesTexto,
         observacao: obsInput.value.trim(),
         formaPagamento: pagtoSel.value,
@@ -1395,7 +1448,7 @@ function renderReservas(c){
       if(editingReservaId){
         try{
           await db.collection('reservas').doc(editingReservaId).update(dadosReserva);
-          await auditLog('Atualizou', 'reservas', `Reserva de ${cliente} editada — ${itemObj.item} (${qtd}x, ${fmtMoney(valorTotal)})`);
+          await auditLog('Atualizou', 'reservas', `Reserva de ${cliente} editada — ${itemObj.item} (${qtd}x, ${fmtMoney(valorTotal)})${ajusteAplicado?` [${descreverAjuste(ajusteTipo, ajusteValor, ajusteAplicado)}]`:''}`);
           await salvarContatoCliente(cliente, telefone);
           limparFormReserva();
         }catch(e){ alert('Não foi possível salvar a edição.'); console.error(e); }
@@ -1404,7 +1457,7 @@ function renderReservas(c){
 
       dadosReserva.vendedor = userName();
       await db.collection('reservas').add(dadosReserva);
-      await auditLog('Criou', 'reservas', `Pedido de ${cliente} — ${itemObj.item} (${qtd}x) em ${fmtDateBR(sel.data)}`);
+      await auditLog('Criou', 'reservas', `Pedido de ${cliente} — ${itemObj.item} (${qtd}x) em ${fmtDateBR(sel.data)}${ajusteAplicado?`, com ${descreverAjuste(ajusteTipo, ajusteValor, ajusteAplicado)}`:''}`);
       await salvarContatoCliente(cliente, telefone);
     });
   }
@@ -1471,6 +1524,7 @@ function renderReservas(c){
       <div class="pedido-item-linha"><span>${escapeHtml(r.item)} × ${r.qtd}</span><span class="valor">${fmtMoney(valorReserva(r))}</span></div>
       <div class="pedido-meta">${r.formaPagamento} · Lançado por ${escapeHtml(r.vendedor||'')}</div>
       ${r.opcoesTexto?`<div class="obs-box">${escapeHtml(r.opcoesTexto)}</div>`:''}
+      ${r.ajusteAplicado?`<div class="obs-box ajuste">${r.ajusteAplicado>0?'➕':'➖'} ${escapeHtml(descreverAjuste(r.ajusteTipo, r.ajusteValor, r.ajusteAplicado))}${r.ajusteMotivo?` — ${escapeHtml(r.ajusteMotivo)}`:''}</div>`:''}
       ${r.observacao?`<div class="obs-box warn">⚠️ ${escapeHtml(r.observacao)}</div>`:''}
       <div class="pills-row">
         <button type="button" class="pill-toggle ${r.pago==='Sim'?'on':''}" data-pago="${r.id}">${r.pago==='Sim'?'✓ Pago':'Pago: Não'}</button>
