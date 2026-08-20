@@ -1203,6 +1203,7 @@ function renderReservas(c){
   const opts = eventosOptions();
   const itensAtivos = DB.cardapio.filter(i=>i.ativo);
   let editingReservaId = null;
+  let carrinho = []; // itens já adicionados a este pedido (ainda não salvos), no modo "novo pedido"
 
   c.appendChild(el(`<div class="section-title" id="reservaFormTitle">Nova Reserva / Pedido</div>`));
   const formTitle = c.querySelector('#reservaFormTitle');
@@ -1212,44 +1213,61 @@ function renderReservas(c){
     const form = el(`<div class="frame">
       <div class="form-grid">
         <div><label>Evento</label><select id="f_evento">${eventoOptionsHtml(opts)}</select></div>
-        <div><label>Horário</label><select id="f_horario"></select></div>
         <div><label>Cliente</label><input type="text" id="f_cliente" list="clientesList" placeholder="Nome do cliente"></div>
         <div><label>Telefone/WhatsApp *</label><input type="text" id="f_telefone" placeholder="(11) 91234-5678"></div>
-        <div><label>Item</label><select id="f_item"></select></div>
-        <div><label>Quantidade</label><input type="number" min="1" value="1" id="f_qtd"></div>
-        <div><label>Tipo de Ajuste</label><select id="f_ajusteTipo">
-          <option value="nenhum">Sem ajuste</option>
-          <option value="valor">R$ fixo — total do pedido</option>
-          <option value="valorUnidade">R$ fixo — por unidade</option>
-          <option value="percentual">% sobre o total</option>
-        </select></div>
-        <div><label>Valor do Ajuste</label><input type="number" step="0.01" value="0" id="f_ajusteValor" placeholder="Ex: -2 ou 5"></div>
-        <div><label>Forma de Pagamento</label><select id="f_pagto"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
-        <div><label>Pago?</label><select id="f_pago"><option>Não</option><option>Sim</option></select></div>
-        <div><label>Entregue?</label><select id="f_entregue"><option>Não</option><option>Sim</option></select></div>
       </div>
-      <div class="small-note" style="margin-top:-10px; margin-bottom:12px;">No ajuste, use valor <strong>negativo</strong> pra desconto (ex: -2) e <strong>positivo</strong> pra acréscimo (ex: 5). Deixe "Sem ajuste" se o preço do cardápio/pacote já está correto — use isso pra casos pontuais, como um ingrediente extra ou uma queima de estoque.</div>
-      <div style="margin-bottom:12px;"><label>Motivo do ajuste (opcional)</label><input type="text" id="f_ajusteMotivo" placeholder="Ex: carne extra no hambúrguer, últimas unidades..."></div>
-      <div class="small-note" id="precoPreview" style="margin-bottom:4px;"></div>
-      <div class="small-note" id="limitePreview" style="margin-bottom:14px;"></div>
-      <div id="opcoesItemWrap"></div>
-      <div style="margin-bottom:12px;"><label>⚠️ Observação livre (opcional)</label><input type="text" id="f_obs" placeholder="Ex: alergia, embalar separado..."></div>
-      <button class="btn" id="btnAdd">+ Adicionar Pedido</button>
-      <button class="btn secondary" id="btnCancelEditReserva" style="display:none;">Cancelar edição</button>
-      <div class="small-note" id="lancadoPorNote">Lançado automaticamente em nome de: <strong>${escapeHtml(userName())}</strong></div>
       <datalist id="clientesList">${DB.clientes.map(cl=>`<option value="${escapeHtml(cl.nome)}">`).join('')}</datalist>
+      <div class="small-note" id="carrinhoModoNota" style="margin:-8px 0 16px;">Adicione um ou mais itens abaixo — cada item vira um pedido independente, então dá pra marcar Pago/Entregue/Montada separadamente e a cliente pode retirar cada coisa num horário de culto diferente, se o evento tiver mais de um.</div>
+
+      <div style="border-top:1px solid var(--line); padding-top:14px;">
+        <div class="form-grid">
+          <div><label>Item</label><select id="f_item"></select></div>
+          <div><label>Horário</label><select id="f_horario"></select></div>
+          <div><label>Quantidade</label><input type="number" min="1" value="1" id="f_qtd"></div>
+          <div><label>Tipo de Ajuste</label><select id="f_ajusteTipo">
+            <option value="nenhum">Sem ajuste</option>
+            <option value="valor">R$ fixo — total do item</option>
+            <option value="valorUnidade">R$ fixo — por unidade</option>
+            <option value="percentual">% sobre o total</option>
+          </select></div>
+          <div><label>Valor do Ajuste</label><input type="number" step="0.01" value="0" id="f_ajusteValor" placeholder="Ex: -2 ou 5"></div>
+        </div>
+        <div class="small-note" style="margin-top:-10px; margin-bottom:12px;">No ajuste, use valor <strong>negativo</strong> pra desconto (ex: -2) e <strong>positivo</strong> pra acréscimo (ex: 5). Deixe "Sem ajuste" se o preço do cardápio/pacote já está correto — use isso pra casos pontuais, como um ingrediente extra ou uma queima de estoque.</div>
+        <div style="margin-bottom:12px;"><label>Motivo do ajuste (opcional)</label><input type="text" id="f_ajusteMotivo" placeholder="Ex: carne extra no hambúrguer, últimas unidades..."></div>
+        <div class="small-note" id="precoPreview" style="margin-bottom:4px;"></div>
+        <div class="small-note" id="limitePreview" style="margin-bottom:14px;"></div>
+        <div id="opcoesItemWrap"></div>
+        <div style="margin-bottom:12px;"><label>⚠️ Observação livre deste item (opcional)</label><input type="text" id="f_obs" placeholder="Ex: alergia, embalar separado..."></div>
+        <button class="btn" id="btnAddItem">+ Adicionar Item ao Pedido</button>
+      </div>
+
+      <div id="carrinhoWrap" style="margin-top:16px;"></div>
+
+      <div style="border-top:1px solid var(--line); padding-top:14px; margin-top:16px;">
+        <div class="form-grid">
+          <div><label>Forma de Pagamento</label><select id="f_pagto"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
+          <div><label>Pago?</label><select id="f_pago"><option>Não</option><option>Sim</option></select></div>
+          <div><label>Entregue?</label><select id="f_entregue"><option>Não</option><option>Sim</option></select></div>
+        </div>
+        <div class="small-note" id="pagtoModoNota" style="margin-top:-10px; margin-bottom:12px;">Aplicado a todos os itens deste pedido ao finalizar. Depois de lançado, cada item vira um cartão próprio em "Pedidos Lançados" e pode ser marcado individualmente.</div>
+        <button class="btn" id="btnFinalizar" disabled>Finalizar Pedido</button>
+        <button class="btn secondary" id="btnCancelEditReserva" style="display:none;">Cancelar edição</button>
+      </div>
+
+      <div class="small-note" id="lancadoPorNote">Lançado automaticamente em nome de: <strong>${escapeHtml(userName())}</strong></div>
     </div>`);
     c.appendChild(form);
 
     const evSel = form.querySelector('#f_evento');
+    const clienteInput = form.querySelector('#f_cliente');
+    const telefoneInput = form.querySelector('#f_telefone');
+    const carrinhoModoNota = form.querySelector('#carrinhoModoNota');
     const horSel = form.querySelector('#f_horario');
     const itemSel = form.querySelector('#f_item');
     const qtdInput = form.querySelector('#f_qtd');
     const ajusteTipoSel = form.querySelector('#f_ajusteTipo');
     const ajusteValorInput = form.querySelector('#f_ajusteValor');
     const ajusteMotivoInput = form.querySelector('#f_ajusteMotivo');
-    const clienteInput = form.querySelector('#f_cliente');
-    const telefoneInput = form.querySelector('#f_telefone');
     function tentarAutoPreencherTelefone(){
       const cl = DB.clientes.find(x=>normalizarNome(x.nome)===normalizarNome(clienteInput.value));
       if(cl && cl.contato){ telefoneInput.value = cl.contato; }
@@ -1263,7 +1281,9 @@ function renderReservas(c){
     const precoPreview = form.querySelector('#precoPreview');
     const limitePreview = form.querySelector('#limitePreview');
     const opcoesItemWrap = form.querySelector('#opcoesItemWrap');
-    const btnAdd = form.querySelector('#btnAdd');
+    const btnAddItem = form.querySelector('#btnAddItem');
+    const carrinhoWrap = form.querySelector('#carrinhoWrap');
+    const btnFinalizar = form.querySelector('#btnFinalizar');
     const btnCancelEditReserva = form.querySelector('#btnCancelEditReserva');
 
     function refreshHorarios(){
@@ -1275,15 +1295,30 @@ function renderReservas(c){
       const disponiveis = itensAtivos.filter(i=> !(i.eventosVinculados||[]).length || (sel && i.eventosVinculados.includes(sel.id)));
       itemSel.innerHTML = disponiveis.length ? disponiveis.map(i=>`<option value="${i.id}">${escapeHtml(i.item)}</option>`).join('') : `<option value="">— Nenhum item vinculado a este evento —</option>`;
     }
-    evSel.addEventListener('change', ()=>{ refreshHorarios(); refreshItemOptions(); refreshOpcoesItem(); refreshPrecoPreview(); });
+    let evSelValorAnterior = evSel.value;
+    evSel.addEventListener('change', ()=>{
+      if(carrinho.length && !editingReservaId){
+        const ok = confirm('Trocar de evento vai limpar os itens já adicionados a este pedido (eles pertencem ao evento anterior). Deseja continuar?');
+        if(!ok){ evSel.value = evSelValorAnterior; return; }
+        carrinho = [];
+      }
+      evSelValorAnterior = evSel.value;
+      refreshHorarios(); refreshItemOptions(); refreshOpcoesItem(); refreshPrecoPreview(); renderCarrinho();
+    });
     refreshHorarios(); refreshItemOptions();
 
     function itemAtual(){ return DB.cardapio.find(i=>i.id===itemSel.value); }
 
+    function qtdItemNoCarrinho(nomeItem){
+      return carrinho.reduce((s,l)=> l.item===nomeItem ? s+l.qtd : s, 0);
+    }
+
     function jaReservadoNoEvento(item){
       const sel = opts.find(o=>o.value===evSel.value);
       if(!sel || !item) return 0;
-      return DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo && r.item===item.item && r.id!==editingReservaId).reduce((s,r)=>s+r.qtd,0);
+      const salvo = DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo && r.item===item.item && r.id!==editingReservaId).reduce((s,r)=>s+r.qtd,0);
+      const noCarrinho = editingReservaId ? 0 : qtdItemNoCarrinho(item.item);
+      return salvo + noCarrinho;
     }
 
     function refreshOpcoesItem(marcarSelecionadas){
@@ -1316,13 +1351,14 @@ function renderReservas(c){
       const ajusteAplicado = calcularAjusteValor(ajusteTipoSel.value, ajusteValorInput.value, qtd, totalBase);
       const totalFinal = Math.round((totalBase + ajusteAplicado)*100)/100;
       const ajusteTxt = ajusteAplicado ? `<br>${descreverAjuste(ajusteTipoSel.value, ajusteValorInput.value, ajusteAplicado)} → <strong>total final: ${fmtMoney(totalFinal)}</strong>` : '';
-      precoPreview.innerHTML = qtd>0 ? `<strong>Total do cardápio: ${fmtMoney(totalBase)}</strong> <span style="color:var(--ink-soft);">(${fmtMoney(qtd?totalBase/qtd:0)} em média por unidade)</span>${texto?`<br>cálculo: ${escapeHtml(texto)}`:''}${ajusteTxt}` : '';
+      precoPreview.innerHTML = qtd>0 ? `<strong>Total deste item: ${fmtMoney(totalBase)}</strong> <span style="color:var(--ink-soft);">(${fmtMoney(qtd?totalBase/qtd:0)} em média por unidade)</span>${texto?`<br>cálculo: ${escapeHtml(texto)}`:''}${ajusteTxt}` : '';
       if(item.limite!==null && item.limite!==undefined && item.limite>0){
         const jaReservado = jaReservadoNoEvento(item);
         const depois = jaReservado + qtd;
         const restante = item.limite - depois;
         const excede = depois > item.limite;
-        limitePreview.innerHTML = `<span style="color:${excede?'var(--warn)':'var(--ink-soft)'}">Reservado até agora: ${jaReservado} de ${item.limite}. Com este pedido: <strong>${depois} de ${item.limite}</strong> (restam ${Math.max(0,restante)})${excede?' — ⚠️ ultrapassa o limite, não vai deixar salvar!':''}</span>`;
+        const contexto = (!editingReservaId && qtdItemNoCarrinho(item.item)>0) ? ' (já contando outro(s) item(ns) deste mesmo pedido)' : '';
+        limitePreview.innerHTML = `<span style="color:${excede?'var(--warn)':'var(--ink-soft)'}">Já reservado${contexto}: ${jaReservado} de ${item.limite}. Adicionando este: <strong>${depois} de ${item.limite}</strong> (restam ${Math.max(0,restante)})${excede?' — ⚠️ ultrapassa o limite, não vai deixar salvar!':''}</span>`;
       } else {
         limitePreview.innerHTML = '';
       }
@@ -1332,26 +1368,86 @@ function renderReservas(c){
     qtdInput.addEventListener('input', refreshPrecoPreview);
     ajusteTipoSel.addEventListener('change', refreshPrecoPreview);
     ajusteValorInput.addEventListener('input', refreshPrecoPreview);
-    refreshOpcoesItem(); refreshPrecoPreview();
 
-    function limparFormReserva(){
-      evSel.selectedIndex = 0; refreshHorarios(); refreshItemOptions();
-      clienteInput.value = ''; telefoneInput.value = ''; itemSel.selectedIndex = 0;
-      qtdInput.value = '1'; pagtoSel.value='Dinheiro'; pagoSel.value='Não'; entregueSel.value='Não';
+    function limparCamposItem(){
+      itemSel.selectedIndex = 0;
+      qtdInput.value = '1';
       ajusteTipoSel.value = 'nenhum'; ajusteValorInput.value = '0'; ajusteMotivoInput.value = '';
       obsInput.value = '';
+      refreshOpcoesItem();
+      refreshPrecoPreview();
+    }
+
+    function atualizarUI(){
+      const emEdicao = !!editingReservaId;
+      btnAddItem.style.display = emEdicao ? 'none' : 'inline-block';
+      carrinhoWrap.style.display = emEdicao ? 'none' : '';
+      carrinhoModoNota.style.display = emEdicao ? 'none' : '';
+      if(emEdicao){
+        btnCancelEditReserva.textContent = 'Cancelar edição';
+        btnCancelEditReserva.style.display = 'inline-block';
+        btnFinalizar.textContent = 'Salvar Alterações';
+        btnFinalizar.disabled = false;
+      } else {
+        btnCancelEditReserva.textContent = 'Limpar Pedido';
+        btnCancelEditReserva.style.display = carrinho.length ? 'inline-block' : 'none';
+        btnFinalizar.textContent = carrinho.length ? `Finalizar Pedido (${carrinho.length} ${carrinho.length===1?'item':'itens'})` : 'Finalizar Pedido';
+        btnFinalizar.disabled = carrinho.length===0;
+      }
+    }
+
+    function renderCarrinho(){
+      carrinhoWrap.innerHTML = '';
+      if(!carrinho.length){
+        carrinhoWrap.appendChild(el(`<div class="small-note">Nenhum item adicionado ainda a este pedido — use "+ Adicionar Item ao Pedido" acima.</div>`));
+      } else {
+        const totalPedido = carrinho.reduce((s,l)=>s+l.valorTotal,0);
+        const linhasHtml = carrinho.map((l,i)=>`
+          <div class="frame" style="padding:10px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
+            <div>
+              <strong>${escapeHtml(l.item)}</strong> × ${l.qtd} <span class="small-note" style="margin:0;">· 🕒 ${escapeHtml(l.horario)}</span>
+              ${l.opcoesTexto?`<div class="small-note" style="margin:2px 0 0;">${escapeHtml(l.opcoesTexto)}</div>`:''}
+              ${l.ajusteAplicado?`<div class="small-note" style="margin:2px 0 0;">${escapeHtml(descreverAjuste(l.ajusteTipo,l.ajusteValor,l.ajusteAplicado))}${l.ajusteMotivo?` — ${escapeHtml(l.ajusteMotivo)}`:''}</div>`:''}
+              ${l.observacao?`<div class="small-note" style="margin:2px 0 0; color:var(--warn);">⚠️ ${escapeHtml(l.observacao)}</div>`:''}
+            </div>
+            <div style="display:flex; align-items:center; gap:12px;">
+              <strong style="color:var(--gold); white-space:nowrap;">${fmtMoney(l.valorTotal)}</strong>
+              <button type="button" class="btn danger small" data-remover-carrinho="${i}">Remover</button>
+            </div>
+          </div>`).join('');
+        carrinhoWrap.appendChild(el(`<div>
+          <div class="small-note" style="margin-bottom:8px; text-transform:uppercase; letter-spacing:0.6px;">Itens deste pedido (${carrinho.length})</div>
+          ${linhasHtml}
+          <div style="text-align:right; font-family:'Inter',sans-serif; font-size:14px; margin-top:6px;">Total do pedido: <strong style="color:var(--gold);">${fmtMoney(totalPedido)}</strong></div>
+        </div>`));
+        carrinhoWrap.querySelectorAll('[data-remover-carrinho]').forEach(btn=>{
+          btn.addEventListener('click', ()=>{
+            carrinho.splice(Number(btn.dataset.removerCarrinho),1);
+            renderCarrinho();
+            refreshPrecoPreview();
+          });
+        });
+      }
+      atualizarUI();
+    }
+
+    function limparFormReserva(){
+      evSel.selectedIndex = 0; evSelValorAnterior = evSel.value; refreshHorarios(); refreshItemOptions();
+      clienteInput.value = ''; telefoneInput.value = '';
+      carrinho = [];
+      limparCamposItem();
+      pagtoSel.value='Dinheiro'; pagoSel.value='Não'; entregueSel.value='Não';
       editingReservaId = null;
       formTitle.textContent = 'Nova Reserva / Pedido';
-      btnAdd.textContent = '+ Adicionar Pedido';
-      btnCancelEditReserva.style.display = 'none';
       form.querySelector('#lancadoPorNote').style.display = '';
-      refreshOpcoesItem(); refreshPrecoPreview();
+      renderCarrinho();
     }
     btnCancelEditReserva.addEventListener('click', limparFormReserva);
 
     window._carregarReservaParaEdicao = function(r){
       editingReservaId = r.id;
-      evSel.value = eventoKey(r.data, r.tipo); refreshHorarios(); refreshItemOptions();
+      carrinho = [];
+      evSel.value = eventoKey(r.data, r.tipo); evSelValorAnterior = evSel.value; refreshHorarios(); refreshItemOptions();
       horSel.value = r.horario;
       clienteInput.value = r.cliente;
       telefoneInput.value = contatoDoCliente(r.cliente) || '';
@@ -1366,53 +1462,27 @@ function renderReservas(c){
       entregueSel.value = r.entregue || 'Não';
       obsInput.value = r.observacao || '';
       refreshOpcoesItem(r.opcoesSelecionadas); refreshPrecoPreview();
-      formTitle.textContent = `Editar Reserva — ${r.cliente}`;
-      btnAdd.textContent = 'Salvar Alterações';
-      btnCancelEditReserva.style.display = 'inline-block';
+      formTitle.textContent = `Editar Item — ${r.cliente}`;
       form.querySelector('#lancadoPorNote').style.display = 'none';
+      renderCarrinho();
       form.scrollIntoView({behavior:'smooth', block:'start'});
     };
 
-    btnAdd.addEventListener('click', async ()=>{
-      const sel = opts.find(o=>o.value===evSel.value);
-      let cliente = clienteInput.value.trim();
-      const telefone = telefoneInput.value.trim();
+    btnAddItem.addEventListener('click', ()=>{
       const itemObj = itemAtual();
       const qtd = parseInt(qtdInput.value,10);
-      if(!cliente || !itemObj || !qtd || qtd<1){ alert('Preencha cliente, item e quantidade válida.'); return; }
-      if(!telefone){ alert('O telefone/WhatsApp do cliente é obrigatório.'); telefoneInput.focus(); return; }
-      const telefoneCheck = whatsappUrl(telefone);
-      if(!telefoneCheck || telefoneCheck==='INVALIDO'){ alert('Esse telefone não parece válido. Confira o DDD e o número (deve ter DDD + 8 ou 9 dígitos).'); telefoneInput.focus(); return; }
+      if(!itemObj || !qtd || qtd<1){ alert('Selecione um item e uma quantidade válida.'); return; }
+      const horario = horSel.value;
+      const selAtual = opts.find(o=>o.value===evSel.value);
 
-      // checa nome de cliente parecido com um já cadastrado, pra evitar duplicidade (ex: "Elisangela" x "Elizangela")
-      const jaExisteExato = DB.clientes.some(cl=>normalizarNome(cl.nome)===normalizarNome(cliente));
-      if(!jaExisteExato){
-        const similar = encontrarClienteSimilar(cliente);
-        if(similar){
-          const usarExistente = confirm(`Já existe um cliente cadastrado com nome parecido: "${similar.nome}".\n\nClique OK se for a MESMA pessoa (usar "${similar.nome}").\nClique Cancelar se for uma pessoa DIFERENTE (manter "${cliente}").`);
-          if(usarExistente){ cliente = similar.nome; }
-        }
-      }
-
-      // checa limite de quantidade do item nesse evento — revalida direto no banco (não só no cache local),
-      // pra reduzir o risco de duas pessoas venderem a última unidade ao mesmo tempo
       if(itemObj.limite!==null && itemObj.limite!==undefined && itemObj.limite>0){
-        let jaReservadoFresco;
-        try{
-          const snap = await db.collection('reservas')
-            .where('data','==',sel.data).where('tipo','==',sel.tipo).where('item','==',itemObj.item).get();
-          jaReservadoFresco = snap.docs.filter(d=>d.id!==editingReservaId).reduce((s,d)=>s+(d.data().qtd||0),0);
-        }catch(e){
-          console.error('Falha ao revalidar limite', e);
-          jaReservadoFresco = jaReservadoNoEvento(itemObj);
-        }
-        if((jaReservadoFresco + qtd) > itemObj.limite){
-          alert(`Não é possível lançar este pedido: "${itemObj.item}" já tem ${jaReservadoFresco} de ${itemObj.limite} reservados neste evento. Restam apenas ${Math.max(0,itemObj.limite-jaReservadoFresco)} unidade(s).`);
+        const jaReservado = jaReservadoNoEvento(itemObj);
+        if((jaReservado + qtd) > itemObj.limite){
+          alert(`Não é possível adicionar: "${itemObj.item}" já soma ${jaReservado} de ${itemObj.limite} (contando o que já está reservado + o que já está neste pedido). Restam apenas ${Math.max(0,itemObj.limite-jaReservado)} unidade(s).`);
           return;
         }
       }
 
-      // captura opções selecionadas e valida grupos de escolha única
       const opcoesSelecionadas = {};
       if(itemObj.temOpcoes && (itemObj.opcoes||[]).length){
         for(let gi=0; gi<itemObj.opcoes.length; gi++){
@@ -1423,29 +1493,97 @@ function renderReservas(c){
         }
       }
       const opcoesTexto = Object.entries(opcoesSelecionadas).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join('/'):v}`).join('; ');
-      const valorTotalBase = calcularValorTotal(itemObj, qtd, sel.data);
+
+      const valorTotalBase = calcularValorTotal(itemObj, qtd, selAtual.data);
       const ajusteTipo = ajusteTipoSel.value;
       const ajusteValor = parseFloat(ajusteValorInput.value) || 0;
       const ajusteAplicado = calcularAjusteValor(ajusteTipo, ajusteValor, qtd, valorTotalBase);
       const ajusteMotivo = ajusteMotivoInput.value.trim();
       const valorTotal = Math.round((valorTotalBase + ajusteAplicado)*100)/100;
-      const precoUnit = qtd ? valorTotal/qtd : 0;
 
-      const dadosReserva = {
-        data: sel.data, tipo: sel.tipo, horario: horSel.value,
-        cliente, item: itemObj.item, qtd, precoUnit, valorTotal,
-        ajusteTipo: ajusteAplicado ? ajusteTipo : 'nenhum',
-        ajusteValor: ajusteAplicado ? ajusteValor : 0,
-        ajusteAplicado,
-        ajusteMotivo: ajusteAplicado ? ajusteMotivo : '',
-        opcoesSelecionadas, opcoesTexto,
-        observacao: obsInput.value.trim(),
-        formaPagamento: pagtoSel.value,
-        pago: pagoSel.value,
-        entregue: entregueSel.value,
-      };
+      carrinho.push({
+        itemId: itemObj.id, item: itemObj.item, horario, qtd, valorTotal, precoUnit: qtd?valorTotal/qtd:0,
+        ajusteTipo: ajusteAplicado?ajusteTipo:'nenhum', ajusteValor: ajusteAplicado?ajusteValor:0, ajusteAplicado,
+        ajusteMotivo: ajusteAplicado?ajusteMotivo:'',
+        opcoesSelecionadas, opcoesTexto, observacao: obsInput.value.trim(),
+      });
+      renderCarrinho();
+      limparCamposItem();
+    });
+
+    btnFinalizar.addEventListener('click', async ()=>{
+      const sel = opts.find(o=>o.value===evSel.value);
+      let cliente = clienteInput.value.trim();
+      const telefone = telefoneInput.value.trim();
+      if(!cliente){ alert('Preencha o nome do cliente.'); return; }
+      if(!telefone){ alert('O telefone/WhatsApp do cliente é obrigatório.'); telefoneInput.focus(); return; }
+      const telefoneCheck = whatsappUrl(telefone);
+      if(!telefoneCheck || telefoneCheck==='INVALIDO'){ alert('Esse telefone não parece válido. Confira o DDD e o número (deve ter DDD + 8 ou 9 dígitos).'); telefoneInput.focus(); return; }
+
+      // checa nome de cliente parecido com um já cadastrado, pra evitar duplicidade (ex: "Elisangela" x "Elizangela") — uma vez por pedido
+      const jaExisteExato = DB.clientes.some(cl=>normalizarNome(cl.nome)===normalizarNome(cliente));
+      if(!jaExisteExato){
+        const similar = encontrarClienteSimilar(cliente);
+        if(similar){
+          const usarExistente = confirm(`Já existe um cliente cadastrado com nome parecido: "${similar.nome}".\n\nClique OK se for a MESMA pessoa (usar "${similar.nome}").\nClique Cancelar se for uma pessoa DIFERENTE (manter "${cliente}").`);
+          if(usarExistente){ cliente = similar.nome; }
+        }
+      }
 
       if(editingReservaId){
+        // modo edição: salva só o item atual do formulário, sobrescrevendo a reserva existente
+        const itemObj = itemAtual();
+        const qtd = parseInt(qtdInput.value,10);
+        if(!itemObj || !qtd || qtd<1){ alert('Preencha item e quantidade válida.'); return; }
+
+        if(itemObj.limite!==null && itemObj.limite!==undefined && itemObj.limite>0){
+          let jaReservadoFresco;
+          try{
+            const snap = await db.collection('reservas')
+              .where('data','==',sel.data).where('tipo','==',sel.tipo).where('item','==',itemObj.item).get();
+            jaReservadoFresco = snap.docs.filter(d=>d.id!==editingReservaId).reduce((s,d)=>s+(d.data().qtd||0),0);
+          }catch(e){
+            console.error('Falha ao revalidar limite', e);
+            jaReservadoFresco = jaReservadoNoEvento(itemObj);
+          }
+          if((jaReservadoFresco + qtd) > itemObj.limite){
+            alert(`Não é possível salvar: "${itemObj.item}" já tem ${jaReservadoFresco} de ${itemObj.limite} reservados neste evento. Restam apenas ${Math.max(0,itemObj.limite-jaReservadoFresco)} unidade(s).`);
+            return;
+          }
+        }
+
+        const opcoesSelecionadas = {};
+        if(itemObj.temOpcoes && (itemObj.opcoes||[]).length){
+          for(let gi=0; gi<itemObj.opcoes.length; gi++){
+            const grupo = itemObj.opcoes[gi];
+            const checked = [...opcoesItemWrap.querySelectorAll(`input[name="opgrupo_${gi}"]:checked`)].map(el=>el.value);
+            if(grupo.tipo==='unica' && checked.length===0){ alert(`Selecione uma opção em "${grupo.nome}".`); return; }
+            if(checked.length){ opcoesSelecionadas[grupo.nome] = grupo.tipo==='multipla' ? checked : checked[0]; }
+          }
+        }
+        const opcoesTexto = Object.entries(opcoesSelecionadas).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join('/'):v}`).join('; ');
+        const valorTotalBase = calcularValorTotal(itemObj, qtd, sel.data);
+        const ajusteTipo = ajusteTipoSel.value;
+        const ajusteValor = parseFloat(ajusteValorInput.value) || 0;
+        const ajusteAplicado = calcularAjusteValor(ajusteTipo, ajusteValor, qtd, valorTotalBase);
+        const ajusteMotivo = ajusteMotivoInput.value.trim();
+        const valorTotal = Math.round((valorTotalBase + ajusteAplicado)*100)/100;
+        const precoUnit = qtd ? valorTotal/qtd : 0;
+
+        const dadosReserva = {
+          data: sel.data, tipo: sel.tipo, horario: horSel.value,
+          cliente, item: itemObj.item, qtd, precoUnit, valorTotal,
+          ajusteTipo: ajusteAplicado ? ajusteTipo : 'nenhum',
+          ajusteValor: ajusteAplicado ? ajusteValor : 0,
+          ajusteAplicado,
+          ajusteMotivo: ajusteAplicado ? ajusteMotivo : '',
+          opcoesSelecionadas, opcoesTexto,
+          observacao: obsInput.value.trim(),
+          formaPagamento: pagtoSel.value,
+          pago: pagoSel.value,
+          entregue: entregueSel.value,
+        };
+
         try{
           await db.collection('reservas').doc(editingReservaId).update(dadosReserva);
           await auditLog('Atualizou', 'reservas', `Reserva de ${cliente} editada — ${itemObj.item} (${qtd}x, ${fmtMoney(valorTotal)})${ajusteAplicado?` [${descreverAjuste(ajusteTipo, ajusteValor, ajusteAplicado)}]`:''}`);
@@ -1455,11 +1593,53 @@ function renderReservas(c){
         return;
       }
 
-      dadosReserva.vendedor = userName();
-      await db.collection('reservas').add(dadosReserva);
-      await auditLog('Criou', 'reservas', `Pedido de ${cliente} — ${itemObj.item} (${qtd}x) em ${fmtDateBR(sel.data)}${ajusteAplicado?`, com ${descreverAjuste(ajusteTipo, ajusteValor, ajusteAplicado)}`:''}`);
+      // modo pedido novo: cria uma reserva independente por item do carrinho
+      if(!carrinho.length){ alert('Adicione pelo menos um item ao pedido antes de finalizar.'); return; }
+
+      // revalida no Firestore o limite de produção de cada item único do carrinho (soma de todas as linhas daquele item)
+      const itensUnicos = [...new Set(carrinho.map(l=>l.item))];
+      for(const nomeItem of itensUnicos){
+        const itemObj = DB.cardapio.find(i=>i.item===nomeItem);
+        if(itemObj && itemObj.limite!==null && itemObj.limite!==undefined && itemObj.limite>0){
+          const qtdCarrinho = carrinho.filter(l=>l.item===nomeItem).reduce((s,l)=>s+l.qtd,0);
+          let jaReservadoFresco;
+          try{
+            const snap = await db.collection('reservas')
+              .where('data','==',sel.data).where('tipo','==',sel.tipo).where('item','==',nomeItem).get();
+            jaReservadoFresco = snap.docs.reduce((s,d)=>s+(d.data().qtd||0),0);
+          }catch(e){
+            console.error('Falha ao revalidar limite', e);
+            jaReservadoFresco = DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo && r.item===nomeItem).reduce((s,r)=>s+r.qtd,0);
+          }
+          if((jaReservadoFresco + qtdCarrinho) > itemObj.limite){
+            alert(`Não é possível finalizar: "${nomeItem}" já tem ${jaReservadoFresco} de ${itemObj.limite} reservados neste evento, e este pedido pede mais ${qtdCarrinho}. Restam apenas ${Math.max(0,itemObj.limite-jaReservadoFresco)} unidade(s) — ajuste a quantidade e tente de novo.`);
+            return;
+          }
+        }
+      }
+
+      const vendedor = userName();
+      for(const linha of carrinho){
+        const dadosReserva = {
+          data: sel.data, tipo: sel.tipo, horario: linha.horario,
+          cliente, item: linha.item, qtd: linha.qtd, precoUnit: linha.precoUnit, valorTotal: linha.valorTotal,
+          ajusteTipo: linha.ajusteTipo, ajusteValor: linha.ajusteValor, ajusteAplicado: linha.ajusteAplicado, ajusteMotivo: linha.ajusteMotivo,
+          opcoesSelecionadas: linha.opcoesSelecionadas, opcoesTexto: linha.opcoesTexto,
+          observacao: linha.observacao,
+          formaPagamento: pagtoSel.value,
+          pago: pagoSel.value,
+          entregue: entregueSel.value,
+          vendedor,
+        };
+        await db.collection('reservas').add(dadosReserva);
+        await auditLog('Criou', 'reservas', `Pedido de ${cliente} — ${linha.item} (${linha.qtd}x) em ${fmtDateBR(sel.data)}, horário ${linha.horario}${linha.ajusteAplicado?`, com ${descreverAjuste(linha.ajusteTipo, linha.ajusteValor, linha.ajusteAplicado)}`:''}`);
+      }
       await salvarContatoCliente(cliente, telefone);
+      limparFormReserva();
     });
+
+    refreshOpcoesItem(); refreshPrecoPreview();
+    renderCarrinho();
   }
 
   c.appendChild(el(`<div class="section-title">Pedidos Lançados</div>`));
