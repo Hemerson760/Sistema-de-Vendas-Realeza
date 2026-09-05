@@ -284,12 +284,13 @@ const TABS = [
   {id:'cardapio', label:'Cardápio'},
   {id:'reservas', label:'Reservas'},
   {id:'despesas', label:'Despesas'},
+  {id:'caixa', label:'Caixa'},
   {id:'clientes', label:'Clientes'},
   {id:'auditoria', label:'Auditoria', adminOnly:true},
   {id:'equipe', label:'Equipe', adminOnly:true},
 ];
 
-let DB = { eventos:[], cardapio:[], reservas:[], despesas:[], clientes:[], auditoria:[], equipe:[] };
+let DB = { eventos:[], cardapio:[], reservas:[], despesas:[], entradasAvulsas:[], clientes:[], auditoria:[], equipe:[] };
 let currentTab = 'dashboard';
 let charts = {};
 let currentUser = null;
@@ -305,6 +306,16 @@ const fmtMoney = (n) => 'R$ ' + (Number(n)||0).toLocaleString('pt-BR',{minimumFr
 function valorReserva(r){ return (r.valorTotal !== undefined && r.valorTotal !== null) ? Number(r.valorTotal) : (Number(r.qtd)||0)*(Number(r.precoUnit)||0); }
 const fmtDateBR = (iso) => { if(!iso) return ''; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; };
 const monthLabel = (iso) => { const [y,m] = iso.split('-'); const meses=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return meses[parseInt(m,10)-1] + '/' + y; };
+const hojeStr = () => new Date().toISOString().slice(0,10);
+/* Decide qual deve ser a data de pagamento de uma reserva, preservando o histórico:
+   - virou "Pago" agora → grava a data de hoje (é o dia real em que o dinheiro entrou)
+   - já estava "Pago" e continua → mantém a data que já tinha (edição não deve reescrever o passado)
+   - não está mais "Pago" → apaga a data (não conta mais como entrada no Caixa) */
+function proximaDataPagamento(pagoNovo, pagoAntigo, dataPagamentoAntiga){
+  if(pagoNovo !== 'Sim') return null;
+  if(pagoAntigo === 'Sim') return dataPagamentoAntiga ?? null;
+  return hojeStr();
+}
 function eventoKey(data,tipo){ return data+'|'+tipo; }
 function eventosOptions(){
   const hojeStr = new Date().toISOString().slice(0,10);
@@ -329,19 +340,24 @@ function el(html){ const t=document.createElement('template'); t.innerHTML=html.
 function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 function fmtWhen(ts){ if(!ts || !ts.toDate) return '—'; const d = ts.toDate(); return d.toLocaleDateString('pt-BR')+' '+d.toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}); }
 function userName(){ return (currentUser && (currentUser.displayName || currentUser.email)) || 'Desconhecido'; }
-function whatsappUrl(contato, mensagem){
+/* ---- Normalização de telefone brasileiro ----
+   Aceita qualquer jeito que a pessoa digite (com +55, sem DDD, sem o 9º dígito,
+   tudo junto sem traço...) e devolve sempre o mesmo padrão: "DD 9XXXX-XXXX".
+   Retorna null quando não dá pra confiar no resultado (ex: faltou o DDD de verdade —
+   isso o sistema não tem como adivinhar, só quem digita sabe qual é). */
+function formatarTelefoneBR(contato){
   let d = (contato||'').replace(/\D/g,'').replace(/^0+/, '');
   if(!d) return null;
-  if(d.startsWith('55') && (d.length===12 || d.length===13)){
-    // já vem com DDI e no tamanho certo (10 ou 11 dígitos locais + 55) — não mexe
-  } else if(d.length===11){
-    d = '55'+d; // DDD + 9 dígitos (celular padrão atual)
-  } else if(d.length===10){
-    d = '55'+d.slice(0,2)+'9'+d.slice(2); // DDD + 8 dígitos (formato antigo, sem o 9º dígito) — insere o 9
-  } else {
-    return 'INVALIDO'; // tamanho não bate com nenhum formato brasileiro válido — não arrisca embaralhar
-  }
-  return `https://wa.me/${d}${mensagem ? '?text='+encodeURIComponent(mensagem) : ''}`;
+  if(d.startsWith('55') && (d.length===12 || d.length===13)) d = d.slice(2); // tira o +55/55 do início
+  if(d.length===10) d = d.slice(0,2)+'9'+d.slice(2); // DDD + 8 dígitos (formato antigo) — insere o 9º dígito
+  if(d.length!==11) return null; // não bate com DDD(2)+9 dígitos — provavelmente falta o DDD ou o número está incompleto
+  return { digitos: d, formatado: `${d.slice(0,2)} ${d.slice(2,7)}-${d.slice(7)}` };
+}
+function whatsappUrl(contato, mensagem){
+  const f = formatarTelefoneBR(contato);
+  if(!(contato||'').replace(/\D/g,'')) return null;
+  if(!f) return 'INVALIDO'; // tamanho não bate com nenhum formato brasileiro válido — não arrisca embaralhar
+  return `https://wa.me/55${f.digitos}${mensagem ? '?text='+encodeURIComponent(mensagem) : ''}`;
 }
 function mensagemConfirmacao(r){
   const m = ministerioAtual;
@@ -553,7 +569,7 @@ async function entrarNoMinisterio(m, papel, permissoes){
   document.getElementById('app').style.display = 'block';
   atualizarUserBadge();
   pararListeners();
-  DB = { eventos:[], cardapio:[], reservas:[], despesas:[], clientes:[], auditoria:[], equipe:[] };
+  DB = { eventos:[], cardapio:[], reservas:[], despesas:[], entradasAvulsas:[], clientes:[], auditoria:[], equipe:[] };
   startListeners();
 }
 function renderSeletorMinisterio(permitirCancelar){
@@ -651,6 +667,11 @@ function startListeners(){
     render();
   }, e=>console.error(e)));
 
+  unsubscribers.push(col('entradasAvulsas').onSnapshot(snap=>{
+    DB.entradasAvulsas = snap.docs.map(d=>({id:d.id, ...d.data()}));
+    render();
+  }, e=>console.error(e)));
+
   unsubscribers.push(col('clientes').onSnapshot(snap=>{
     DB.clientes = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
@@ -696,6 +717,7 @@ function render(){
   else if(currentTab==='cardapio') renderCardapio(c);
   else if(currentTab==='reservas') renderReservas(c);
   else if(currentTab==='despesas') renderDespesas(c);
+  else if(currentTab==='caixa') renderCaixa(c);
   else if(currentTab==='clientes') renderClientes(c);
   else if(currentTab==='auditoria') renderAuditoria(c);
   else if(currentTab==='equipe') renderEquipe(c);
@@ -713,6 +735,7 @@ function renderDashboardGeral(c){
   const qtdTotal = DB.reservas.reduce((s,r)=>s+r.qtd,0);
   const naoPagos = DB.reservas.filter(r=>r.pago==='Não').length;
   const naoEntregues = DB.reservas.filter(r=>r.entregue==='Não').length;
+  const resumoCaixa = calcularResumoCaixa();
 
   c.appendChild(el(`<div class="section-title">Resumo Global</div>`));
   c.appendChild(el(`<div class="frame"><div class="kpi-grid">
@@ -724,6 +747,14 @@ function renderDashboardGeral(c){
     <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Retorno s/ Investido</div><div class="value">${fmtPct(roiPct(totalVendido,totalDespesas))}</div></div>
     <div class="kpi ${naoPagos>0?'warn':''}"><div class="label">Pedidos Não Pagos</div><div class="value">${naoPagos}</div></div>
     <div class="kpi ${naoEntregues>0?'warn':''}"><div class="label">Não Entregues</div><div class="value">${naoEntregues}</div></div>
+  </div></div>`));
+
+  c.appendChild(el(`<div class="section-title">Resumo do Caixa</div>`));
+  c.appendChild(el(`<div class="small-note" style="margin-bottom:10px;">Diferente do "Total Vendido" acima (que conta todo pedido lançado), aqui só entra o que já virou dinheiro de verdade: pedidos já pagos + entradas avulsas, menos as saídas. Veja o extrato completo na aba "Caixa".</div>`));
+  c.appendChild(el(`<div class="frame"><div class="kpi-grid">
+    <div class="kpi ok"><div class="label">Total Entradas</div><div class="value">${fmtMoney(resumoCaixa.totalEntradas)}</div></div>
+    <div class="kpi warn"><div class="label">Total Saídas</div><div class="value">${fmtMoney(resumoCaixa.totalSaidas)}</div></div>
+    <div class="kpi ${resumoCaixa.saldo>=0?'ok':'warn'}"><div class="label">Caixa Atual</div><div class="value">${fmtMoney(resumoCaixa.saldo)}</div></div>
   </div></div>`));
 
   c.appendChild(el(`<div class="section-title">Comparativo por Tipo de Evento</div>`));
@@ -1685,11 +1716,14 @@ function renderReservas(c){
     btnFinalizar.addEventListener('click', async ()=>{
       const sel = opts.find(o=>o.value===evSel.value);
       let cliente = clienteInput.value.trim();
-      const telefone = telefoneInput.value.trim();
+      const telefoneDigitado = telefoneInput.value.trim();
       if(!cliente){ alert('Preencha o nome do cliente.'); return; }
-      if(!telefone){ alert('O telefone/WhatsApp do cliente é obrigatório.'); telefoneInput.focus(); return; }
-      const telefoneCheck = whatsappUrl(telefone);
-      if(!telefoneCheck || telefoneCheck==='INVALIDO'){ alert('Esse telefone não parece válido. Confira o DDD e o número (deve ter DDD + 8 ou 9 dígitos).'); telefoneInput.focus(); return; }
+      if(!telefoneDigitado){ alert('O telefone/WhatsApp do cliente é obrigatório.'); telefoneInput.focus(); return; }
+      // Padroniza sempre no formato "DD 9XXXX-XXXX", não importa como foi digitado (com +55, sem o
+      // 9º dígito, tudo junto sem traço...) — assim o cadastro de Clientes fica sempre consistente.
+      const telefoneFmt = formatarTelefoneBR(telefoneDigitado);
+      if(!telefoneFmt){ alert('Esse telefone não parece válido. Confira o DDD e o número (deve ter DDD + 8 ou 9 dígitos).'); telefoneInput.focus(); return; }
+      const telefone = telefoneFmt.formatado;
 
       // checa nome de cliente parecido com um já cadastrado, pra evitar duplicidade (ex: "Elisangela" x "Elizangela") — uma vez por pedido
       const jaExisteExato = DB.clientes.some(cl=>normalizarNome(cl.nome)===normalizarNome(cliente));
@@ -1740,6 +1774,7 @@ function renderReservas(c){
         const ajusteMotivo = ajusteMotivoInput.value.trim();
         const valorTotal = Math.round((valorTotalBase + ajusteAplicado)*100)/100;
         const precoUnit = qtd ? valorTotal/qtd : 0;
+        const reservaOriginal = DB.reservas.find(r=>r.id===editingReservaId);
 
         const dadosReserva = {
           data: sel.data, tipo: sel.tipo, horario: horSel.value,
@@ -1752,6 +1787,7 @@ function renderReservas(c){
           observacao: obsInput.value.trim(),
           formaPagamento: pagtoSel.value,
           pago: pagoSel.value,
+          dataPagamento: proximaDataPagamento(pagoSel.value, reservaOriginal?reservaOriginal.pago:'Não', reservaOriginal?reservaOriginal.dataPagamento:null),
           entregue: entregueSel.value,
         };
 
@@ -1799,6 +1835,7 @@ function renderReservas(c){
           observacao: linha.observacao,
           formaPagamento: pagtoSel.value,
           pago: pagoSel.value,
+          dataPagamento: proximaDataPagamento(pagoSel.value, 'Não', null),
           entregue: entregueSel.value,
           vendedor,
         };
@@ -1941,8 +1978,9 @@ function renderReservas(c){
   tableWrap.querySelectorAll('[data-pago]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const r = DB.reservas.find(x=>x.id===btn.dataset.pago);
     const novo = r.pago==='Sim'?'Não':'Sim';
-    await col('reservas').doc(r.id).update({pago:novo});
-    await auditLog('Atualizou', 'reservas', `Pagamento de ${r.cliente} (${r.item}): ${r.pago} → ${novo}`);
+    const dataPagamento = proximaDataPagamento(novo, r.pago, r.dataPagamento);
+    await col('reservas').doc(r.id).update({pago:novo, dataPagamento});
+    await auditLog('Atualizou', 'reservas', `Pagamento de ${r.cliente} (${r.item}): ${r.pago} → ${novo}${novo==='Sim'?` (recebido em ${fmtDateBR(dataPagamento)})`:''}`);
   }));
   tableWrap.querySelectorAll('[data-ent]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const r = DB.reservas.find(x=>x.id===btn.dataset.ent);
@@ -1985,15 +2023,15 @@ const UNIDADES_PADRAO = ['kg','g','L','ml','unidade','pacote','caixa','dúzia','
 function renderDespesas(c){
   const opts = eventosOptions();
   let editingDespesaId = null;
+  const SEM_EVENTO = '__avulsa';
 
   c.appendChild(el(`<div class="section-title" id="despesaFormTitle">Nova Despesa</div>`));
   const formTitle = c.querySelector('#despesaFormTitle');
-  if(opts.length===0){
-    c.appendChild(el(`<div class="frame empty-state">Cadastre um evento primeiro.</div>`));
-  } else {
+  {
     const form = el(`<div class="frame">
       <div class="form-grid">
-        <div><label>Evento</label><select id="f_evento">${eventoOptionsHtml(opts)}</select></div>
+        <div><label>Evento</label><select id="f_evento"><option value="${SEM_EVENTO}">— Sem evento (saída geral) —</option>${eventoOptionsHtml(opts)}</select></div>
+        <div id="f_dataAvulsaWrap" style="display:none;"><label>Data desta saída</label><input type="date" id="f_dataAvulsa" value="${hojeStr()}"></div>
         <div><label>Descrição</label><input type="text" id="f_desc" placeholder="Ex: Massa e recheio"></div>
         <div><label>Categoria</label><input type="text" id="f_cat" placeholder="Ex: Ingredientes"></div>
         <div><label>Quantidade</label><input type="number" step="0.01" min="0" id="f_qtd" placeholder="Ex: 5"></div>
@@ -2001,12 +2039,15 @@ function renderDespesas(c){
         <div id="f_unidadeOutraWrap" style="display:none;"><label>Qual unidade?</label><input type="text" id="f_unidadeOutra" placeholder="Ex: bandeja"></div>
         <div><label>Valor (R$)</label><input type="number" step="0.01" id="f_valor"></div>
       </div>
+      <div class="small-note" style="margin-top:-10px; margin-bottom:12px;">Use "Sem evento" pra saídas que não são de uma cantina específica (ex: uma conta geral do ministério).</div>
       <button class="btn" id="btnAdd">+ Adicionar Despesa</button>
       <button class="btn secondary" id="btnCancelEditDespesa" style="display:none;">Cancelar edição</button>
     </div>`);
     c.appendChild(form);
 
     const evSel = form.querySelector('#f_evento');
+    const dataAvulsaWrap = form.querySelector('#f_dataAvulsaWrap');
+    const dataAvulsaInput = form.querySelector('#f_dataAvulsa');
     const descInput = form.querySelector('#f_desc');
     const catInput = form.querySelector('#f_cat');
     const qtdInput = form.querySelector('#f_qtd');
@@ -2017,11 +2058,19 @@ function renderDespesas(c){
     const btnAdd = form.querySelector('#btnAdd');
     const btnCancelEditDespesa = form.querySelector('#btnCancelEditDespesa');
 
+    function atualizarVisibilidadeEvento(){
+      dataAvulsaWrap.style.display = evSel.value===SEM_EVENTO ? 'block' : 'none';
+    }
+    evSel.addEventListener('change', atualizarVisibilidadeEvento);
+    atualizarVisibilidadeEvento();
+
     unidadeSel.addEventListener('change', ()=>{
       unidadeOutraWrap.style.display = unidadeSel.value==='__outra' ? 'block' : 'none';
     });
 
     function limparFormDespesa(){
+      evSel.value = opts.length ? opts[0].value : SEM_EVENTO; atualizarVisibilidadeEvento();
+      dataAvulsaInput.value = hojeStr();
       descInput.value=''; catInput.value=''; qtdInput.value=''; valorInput.value='';
       unidadeSel.value = UNIDADES_PADRAO[0]; unidadeOutraWrap.style.display='none'; unidadeOutraInput.value='';
       editingDespesaId = null;
@@ -2033,7 +2082,8 @@ function renderDespesas(c){
 
     window._carregarDespesaParaEdicao = function(d){
       editingDespesaId = d.id;
-      evSel.value = eventoKey(d.data, d.tipo);
+      if(d.tipo){ evSel.value = eventoKey(d.data, d.tipo); } else { evSel.value = SEM_EVENTO; dataAvulsaInput.value = d.data; }
+      atualizarVisibilidadeEvento();
       descInput.value = d.descricao||'';
       catInput.value = d.categoria||'';
       qtdInput.value = (d.quantidade===null||d.quantidade===undefined) ? '' : d.quantidade;
@@ -2050,7 +2100,8 @@ function renderDespesas(c){
     };
 
     btnAdd.addEventListener('click', async ()=>{
-      const sel = opts.find(o=>o.value===evSel.value);
+      const semEvento = evSel.value===SEM_EVENTO;
+      const sel = semEvento ? null : opts.find(o=>o.value===evSel.value);
       const descricao = descInput.value.trim();
       const categoria = catInput.value.trim();
       const valor = parseFloat(valorInput.value);
@@ -2058,8 +2109,14 @@ function renderDespesas(c){
       const quantidade = quantidadeRaw==='' ? null : parseFloat(quantidadeRaw);
       const unidade = unidadeSel.value==='__outra' ? unidadeOutraInput.value.trim() : unidadeSel.value;
       if(!descricao || isNaN(valor)){ alert('Preencha descrição e valor.'); return; }
+      if(semEvento && !dataAvulsaInput.value){ alert('Preencha a data desta saída.'); return; }
+      if(!semEvento && !sel){ alert('Selecione um evento (ou "Sem evento").'); return; }
 
-      const dadosDespesa = { data:sel.data, tipo:sel.tipo, descricao, categoria, valor, quantidade, unidade: quantidade!==null ? unidade : null };
+      const dadosDespesa = {
+        data: semEvento ? dataAvulsaInput.value : sel.data,
+        tipo: semEvento ? null : sel.tipo,
+        descricao, categoria, valor, quantidade, unidade: quantidade!==null ? unidade : null,
+      };
 
       if(editingDespesaId){
         try{
@@ -2072,7 +2129,7 @@ function renderDespesas(c){
 
       dadosDespesa.lancadoPor = userName();
       await col('despesas').add(dadosDespesa);
-      await auditLog('Criou', 'despesas', `Despesa "${descricao}" (${fmtMoney(valor)}) em ${fmtDateBR(sel.data)}`);
+      await auditLog('Criou', 'despesas', `Despesa "${descricao}" (${fmtMoney(valor)}) em ${fmtDateBR(dadosDespesa.data)}${semEvento?' (sem evento)':''}`);
     });
   }
 
@@ -2080,13 +2137,14 @@ function renderDespesas(c){
   window._filtrosDespesa = window._filtrosDespesa || {evento:''};
   window._despesaSort = window._despesaSort || {key:'data', dir:'desc'};
   const filterWrap = el(`<div class="filters-row">
-    <div><label>Evento</label><select id="filtEventoDespesa"><option value="">Todos</option>${eventoOptionsHtml(opts, window._filtrosDespesa.evento)}</select></div>
+    <div><label>Evento</label><select id="filtEventoDespesa"><option value="">Todos</option><option value="__avulsa" ${window._filtrosDespesa.evento==='__avulsa'?'selected':''}>Sem evento (geral)</option>${eventoOptionsHtml(opts, window._filtrosDespesa.evento)}</select></div>
   </div>`);
   c.appendChild(filterWrap);
   filterWrap.querySelector('#filtEventoDespesa').addEventListener('change', e=>{ window._filtrosDespesa.evento=e.target.value; render(); });
 
   let list = [...DB.despesas];
-  if(window._filtrosDespesa.evento){ const [d,t]=window._filtrosDespesa.evento.split('|'); list = list.filter(x=>x.data===d && x.tipo===t); }
+  if(window._filtrosDespesa.evento==='__avulsa'){ list = list.filter(x=>!x.tipo); }
+  else if(window._filtrosDespesa.evento){ const [d,t]=window._filtrosDespesa.evento.split('|'); list = list.filter(x=>x.data===d && x.tipo===t); }
 
   function despesaSortValue(d, key){
     switch(key){
@@ -2121,7 +2179,7 @@ function renderDespesas(c){
 
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>${theadHtml}
     <tbody>${list.length? list.map(d=>`<tr data-id="${d.id}">
-      <td>${fmtDateBR(d.data)}</td><td>${d.tipo}</td><td>${escapeHtml(d.descricao)}</td><td>${escapeHtml(d.categoria)}</td>
+      <td>${fmtDateBR(d.data)}</td><td>${d.tipo?escapeHtml(d.tipo):'<span class="small-note" style="margin:0;">Geral</span>'}</td><td>${escapeHtml(d.descricao)}</td><td>${escapeHtml(d.categoria)}</td>
       <td>${(d.quantidade===null||d.quantidade===undefined)?'—':`${d.quantidade} ${escapeHtml(d.unidade||'')}`}</td>
       <td>${fmtMoney(d.valor)}</td><td>${escapeHtml(d.lancadoPor||'')}</td>
       <td style="white-space:nowrap;">
@@ -2148,6 +2206,194 @@ function renderDespesas(c){
     await col('despesas').doc(d.id).delete();
     await auditLog('Excluiu', 'despesas', `Despesa "${d.descricao}" (${fmtMoney(d.valor)})`);
   }));
+}
+
+/* ==================== CAIXA ==================== */
+function dataEntradaReserva(r){ return r.dataPagamento || r.data; }
+
+function calcularResumoCaixa(){
+  const entradasVendas = DB.reservas.filter(r=>r.pago==='Sim').reduce((s,r)=>s+valorReserva(r),0);
+  const entradasAvulsasTotal = DB.entradasAvulsas.reduce((s,e)=>s+Number(e.valor),0);
+  const totalEntradas = entradasVendas + entradasAvulsasTotal;
+  const totalSaidas = DB.despesas.reduce((s,d)=>s+Number(d.valor),0);
+  return { entradasVendas, entradasAvulsasTotal, totalEntradas, totalSaidas, saldo: totalEntradas - totalSaidas };
+}
+
+function construirMovimentosCaixa(){
+  const movs = [];
+  DB.reservas.filter(r=>r.pago==='Sim').forEach(r=>{
+    movs.push({
+      data: dataEntradaReserva(r), tipoMov:'entrada', origem:'venda',
+      descricao: `${r.cliente} — ${r.item}`,
+      categoriaEvento: r.tipo ? `${fmtDateBR(r.data)} — ${r.tipo}` : '—',
+      valor: valorReserva(r), idOrigem: r.id,
+    });
+  });
+  DB.entradasAvulsas.forEach(e=>{
+    movs.push({
+      data: e.data, tipoMov:'entrada', origem:'avulsa',
+      descricao: e.descricao, categoriaEvento: e.categoria || '—',
+      valor: Number(e.valor), idOrigem: e.id,
+    });
+  });
+  DB.despesas.forEach(d=>{
+    movs.push({
+      data: d.data, tipoMov:'saida', origem: d.tipo ? 'evento' : 'avulsa',
+      descricao: d.descricao,
+      categoriaEvento: d.tipo ? `${fmtDateBR(d.data)} — ${d.tipo}` : (d.categoria || 'Geral'),
+      valor: Number(d.valor), idOrigem: d.id,
+    });
+  });
+  movs.sort((a,b)=> a.data===b.data ? 0 : (a.data<b.data?-1:1));
+  let saldo = 0;
+  movs.forEach(m=>{ saldo += (m.tipoMov==='entrada'? m.valor : -m.valor); m.saldoAcumulado = saldo; });
+  return movs;
+}
+
+function renderCaixa(c){
+  const resumo = calcularResumoCaixa();
+  const movs = construirMovimentosCaixa();
+
+  c.appendChild(el(`<div class="section-title">Resumo do Caixa</div>`));
+  c.appendChild(el(`<div class="frame"><div class="kpi-grid">
+    <div class="kpi ${resumo.saldo>=0?'ok':'warn'}"><div class="label">Caixa Atual</div><div class="value">${fmtMoney(resumo.saldo)}</div></div>
+    <div class="kpi ok"><div class="label">Total Entradas</div><div class="value">${fmtMoney(resumo.totalEntradas)}</div></div>
+    <div class="kpi warn"><div class="label">Total Saídas</div><div class="value">${fmtMoney(resumo.totalSaidas)}</div></div>
+    <div class="kpi"><div class="label">Entradas de Vendas</div><div class="value">${fmtMoney(resumo.entradasVendas)}</div></div>
+    <div class="kpi"><div class="label">Entradas Avulsas</div><div class="value">${fmtMoney(resumo.entradasAvulsasTotal)}</div></div>
+  </div></div>`));
+  c.appendChild(el(`<div class="small-note" style="margin:-8px 0 16px;">"Entradas de Vendas" conta só os pedidos já marcados como Pago, na data real do pagamento — pedidos ainda não pagos não entram no caixa.</div>`));
+
+  c.appendChild(el(`<div class="section-title">Registrar Entrada Avulsa</div>`));
+  c.appendChild(el(`<div class="small-note" style="margin-bottom:10px;">Use isso para dinheiro que entra sem ser de uma venda — doações, repasses, etc.</div>`));
+  const form = el(`<div class="frame">
+    <div class="form-grid">
+      <div><label>Data</label><input type="date" id="f_dataEntrada" value="${hojeStr()}"></div>
+      <div><label>Descrição</label><input type="text" id="f_descEntrada" placeholder="Ex: Doação da Família Silva"></div>
+      <div><label>Categoria (opcional)</label><input type="text" id="f_catEntrada" placeholder="Ex: Doação"></div>
+      <div><label>Valor (R$)</label><input type="number" step="0.01" id="f_valorEntrada"></div>
+    </div>
+    <button class="btn" id="btnAddEntrada">+ Adicionar Entrada</button>
+  </div>`);
+  c.appendChild(form);
+  form.querySelector('#btnAddEntrada').addEventListener('click', async ()=>{
+    const data = form.querySelector('#f_dataEntrada').value;
+    const descricao = form.querySelector('#f_descEntrada').value.trim();
+    const categoria = form.querySelector('#f_catEntrada').value.trim();
+    const valor = parseFloat(form.querySelector('#f_valorEntrada').value);
+    if(!data || !descricao || isNaN(valor)){ alert('Preencha data, descrição e valor.'); return; }
+    await col('entradasAvulsas').add({ data, descricao, categoria, valor, lancadoPor: userName() });
+    await auditLog('Criou', 'entradasAvulsas', `Entrada avulsa "${descricao}" (${fmtMoney(valor)}) em ${fmtDateBR(data)}`);
+    form.querySelector('#f_descEntrada').value=''; form.querySelector('#f_catEntrada').value=''; form.querySelector('#f_valorEntrada').value='';
+  });
+
+  const monthsCaixa = {};
+  movs.forEach(m=>{ const k=m.data.slice(0,7); monthsCaixa[k]=monthsCaixa[k]||{entrada:0,saida:0}; monthsCaixa[k][m.tipoMov]+=m.valor; });
+  const monthKeysCaixa = Object.keys(monthsCaixa).sort();
+  let saldoAcum=0; const saldoPorMes = monthKeysCaixa.map(k=>{ saldoAcum += monthsCaixa[k].entrada - monthsCaixa[k].saida; return saldoAcum; });
+
+  c.appendChild(el(`<div class="section-title">Saldo Acumulado ao Longo do Tempo</div>`));
+  c.appendChild(el(`<div class="frame"><div class="chart-box"><canvas id="chartSaldoCaixa" height="200"></canvas></div></div>`));
+
+  c.appendChild(el(`<div class="section-title">Entradas x Saídas por Mês</div>`));
+  c.appendChild(el(`<div class="frame"><div class="chart-box"><canvas id="chartEntradaSaida" height="200"></canvas></div></div>`));
+
+  const catAgg = {};
+  DB.despesas.forEach(d=>{ const k = (d.categoria && d.categoria.trim()) ? d.categoria.trim() : (d.tipo || 'Sem categoria'); catAgg[k]=(catAgg[k]||0)+Number(d.valor); });
+  const catEntries = Object.entries(catAgg).sort((a,b)=>b[1]-a[1]);
+  c.appendChild(el(`<div class="section-title">Saídas por Categoria</div>`));
+  const two1c = el(`<div class="two-col"></div>`);
+  two1c.appendChild(el(`<div class="chart-box"><canvas id="chartSaidaCategoria" height="220"></canvas></div>`));
+  two1c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Categoria</th><th>Total</th><th>%</th></tr></thead>
+    <tbody>${catEntries.length? catEntries.map(([k,v])=>`<tr><td>${escapeHtml(k)}</td><td>${fmtMoney(v)}</td><td>${fmtPct(resumo.totalSaidas? v/resumo.totalSaidas*100:0)}</td></tr>`).join('') : '<tr><td colspan="3" class="empty-state">Nenhuma saída registrada</td></tr>'}</tbody>
+  </table></div></div>`));
+  c.appendChild(two1c);
+
+  const eventoAgg = {};
+  DB.reservas.filter(r=>r.pago==='Sim').forEach(r=>{
+    const k = r.tipo ? eventoKey(r.data, r.tipo) : '__semevento';
+    const label = r.tipo ? `${fmtDateBR(r.data)} — ${r.tipo}` : 'Sem evento vinculado';
+    eventoAgg[k] = eventoAgg[k] || {label, total:0};
+    eventoAgg[k].total += valorReserva(r);
+  });
+  const eventoEntries = Object.values(eventoAgg).sort((a,b)=>b.total-a.total);
+  c.appendChild(el(`<div class="section-title">Entradas por Evento/Cantina</div>`));
+  const two2c = el(`<div class="two-col"></div>`);
+  two2c.appendChild(el(`<div class="chart-box"><canvas id="chartEntradaEvento" height="${Math.max(200, eventoEntries.length*30)}"></canvas></div>`));
+  two2c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Evento</th><th>Total Recebido</th></tr></thead>
+    <tbody>${eventoEntries.length? eventoEntries.map(e=>`<tr><td>${escapeHtml(e.label)}</td><td>${fmtMoney(e.total)}</td></tr>`).join('') : '<tr><td colspan="2" class="empty-state">Nenhuma venda paga ainda</td></tr>'}</tbody>
+  </table></div></div>`));
+  c.appendChild(two2c);
+
+  c.appendChild(el(`<div class="section-title">Extrato de Movimentações</div>`));
+  window._filtrosCaixa = window._filtrosCaixa || {de:'', ate:''};
+  const filterWrap = el(`<div class="filters-row">
+    <div><label>De</label><input type="date" id="filtCaixaDe" value="${window._filtrosCaixa.de}"></div>
+    <div><label>Até</label><input type="date" id="filtCaixaAte" value="${window._filtrosCaixa.ate}"></div>
+    <div><button class="btn secondary" id="btnLimparFiltroCaixa">Limpar filtro</button></div>
+  </div>`);
+  c.appendChild(filterWrap);
+  filterWrap.querySelector('#filtCaixaDe').addEventListener('change', e=>{ window._filtrosCaixa.de = e.target.value; render(); });
+  filterWrap.querySelector('#filtCaixaAte').addEventListener('change', e=>{ window._filtrosCaixa.ate = e.target.value; render(); });
+  filterWrap.querySelector('#btnLimparFiltroCaixa').addEventListener('click', ()=>{ window._filtrosCaixa = {de:'', ate:''}; render(); });
+
+  let movsFiltrados = movs;
+  if(window._filtrosCaixa.de) movsFiltrados = movsFiltrados.filter(m=>m.data >= window._filtrosCaixa.de);
+  if(window._filtrosCaixa.ate) movsFiltrados = movsFiltrados.filter(m=>m.data <= window._filtrosCaixa.ate);
+  const movsOrdenados = [...movsFiltrados].sort((a,b)=> a.data===b.data?0:(a.data<b.data?1:-1));
+
+  const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th>Categoria/Evento</th><th>Valor</th><th>Saldo Acumulado</th><th></th></tr></thead>
+    <tbody>${movsOrdenados.length? movsOrdenados.map(m=>`<tr>
+      <td>${fmtDateBR(m.data)}</td>
+      <td><span class="badge ${m.tipoMov==='entrada'?'sim':'nao'}">${m.tipoMov==='entrada'?'Entrada':'Saída'}</span></td>
+      <td>${escapeHtml(m.descricao)}</td>
+      <td>${escapeHtml(m.categoriaEvento)}</td>
+      <td style="color:${m.tipoMov==='entrada'?'var(--ok)':'var(--warn)'}">${m.tipoMov==='entrada'?'+':'-'} ${fmtMoney(m.valor)}</td>
+      <td>${fmtMoney(m.saldoAcumulado)}</td>
+      <td>${m.origem==='avulsa' && m.tipoMov==='entrada' ? `<button class="btn danger small" data-delentrada="${m.idOrigem}">Excluir</button>` : ''}</td>
+    </tr>`).join('') : '<tr><td colspan="7" class="empty-state">Nenhuma movimentação no período selecionado</td></tr>'}</tbody>
+  </table></div></div>`);
+  c.appendChild(tableWrap);
+  tableWrap.querySelectorAll('[data-delentrada]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    if(!confirm('Excluir esta entrada avulsa?')) return;
+    const en = DB.entradasAvulsas.find(x=>x.id===btn.dataset.delentrada);
+    await col('entradasAvulsas').doc(btn.dataset.delentrada).delete();
+    await auditLog('Excluiu', 'entradasAvulsas', `Entrada avulsa "${en?en.descricao:''}" (${fmtMoney(en?en.valor:0)})`);
+  }));
+
+  if(charts.saldoCaixa) charts.saldoCaixa.destroy();
+  charts.saldoCaixa = new Chart(document.getElementById('chartSaldoCaixa'), {
+    type:'line',
+    data:{ labels: monthKeysCaixa.map(k=>monthLabel(k+'-01')), datasets:[
+      {label:'Saldo Acumulado', data: saldoPorMes, borderColor: ministerioAtual.corGold, backgroundColor: ministerioAtual.corGold, tension:.3, fill:false},
+    ]},
+    options:{ responsive:true, plugins:{legend:{display:false}} }
+  });
+  if(charts.entradaSaida) charts.entradaSaida.destroy();
+  charts.entradaSaida = new Chart(document.getElementById('chartEntradaSaida'), {
+    type:'bar',
+    data:{ labels: monthKeysCaixa.map(k=>monthLabel(k+'-01')), datasets:[
+      {label:'Entradas', data: monthKeysCaixa.map(k=>monthsCaixa[k].entrada), backgroundColor: ministerioAtual.corGold, borderRadius:4},
+      {label:'Saídas', data: monthKeysCaixa.map(k=>monthsCaixa[k].saida), backgroundColor:'#A5493A', borderRadius:4},
+    ]},
+    options:{ responsive:true, plugins:{legend:{position:'bottom'}} }
+  });
+  if(charts.saidaCategoria) charts.saidaCategoria.destroy();
+  const paletaCat = [ministerioAtual.corGold,'#5C7A4B','#A5493A','#8B7B62','#C9A961','#6E8FA3','#B08D3E','#7A5C3E','#4C6B3C','#9C5A4A'];
+  charts.saidaCategoria = new Chart(document.getElementById('chartSaidaCategoria'), {
+    type:'doughnut',
+    data:{ labels: catEntries.map(e=>e[0]), datasets:[{ data: catEntries.map(e=>e[1]), backgroundColor: catEntries.map((_,i)=>paletaCat[i%paletaCat.length]) }] },
+    options:{ responsive:true, plugins:{legend:{position:'bottom'}} }
+  });
+  if(charts.entradaEvento) charts.entradaEvento.destroy();
+  charts.entradaEvento = new Chart(document.getElementById('chartEntradaEvento'), {
+    type:'bar',
+    data:{ labels: eventoEntries.map(e=>e.label), datasets:[{label:'Total Recebido', data: eventoEntries.map(e=>e.total), backgroundColor: ministerioAtual.corGold, borderRadius:4}] },
+    options:{ indexAxis:'y', responsive:true, plugins:{legend:{display:false}} }
+  });
 }
 
 /* ==================== CLIENTES ==================== */
@@ -2183,9 +2429,17 @@ function renderClientes(c){
 
   btnAdd.addEventListener('click', async ()=>{
     const nome = nomeInput.value.trim();
-    const contato = contatoInput.value.trim();
+    const contatoDigitado = contatoInput.value.trim();
     const obs = obsInput.value.trim();
     if(!nome){ alert('Preencha o nome.'); return; }
+    // Padroniza o telefone sempre no formato "DD 9XXXX-XXXX", não importa como foi digitado
+    // (com +55, sem o 9º dígito, tudo junto sem traço...). Só bloqueia se realmente faltar o DDD.
+    let contato = '';
+    if(contatoDigitado){
+      const f = formatarTelefoneBR(contatoDigitado);
+      if(!f){ alert('Esse telefone não parece completo — confira se o DDD (2 dígitos) foi digitado junto.'); contatoInput.focus(); return; }
+      contato = f.formatado;
+    }
 
     if(editingClienteId){
       const clienteAntigo = DB.clientes.find(cl=>cl.id===editingClienteId);
@@ -2214,6 +2468,29 @@ function renderClientes(c){
   });
 
   c.appendChild(el(`<div class="section-title">Clientes Cadastrados</div>`));
+  if(isAdmin()){
+    const btnPadronizar = el(`<button class="btn secondary small" id="btnPadronizarContatos" style="margin-bottom:14px;">Padronizar contatos já cadastrados</button>`);
+    c.appendChild(btnPadronizar);
+    btnPadronizar.addEventListener('click', async ()=>{
+      const alvos = DB.clientes.filter(cl=>cl.contato && cl.contato.trim());
+      if(!alvos.length){ alert('Nenhum cliente com contato cadastrado ainda.'); return; }
+      if(!confirm(`Isso vai reformatar o contato de até ${alvos.length} cliente(s) pro padrão "DD 9XXXX-XXXX" (o mesmo formato que já sai certo em novos cadastros). Continuar?`)) return;
+      let corrigidos = 0, jaCertos = 0;
+      const semDDD = [];
+      for(const cl of alvos){
+        const f = formatarTelefoneBR(cl.contato);
+        if(!f){ semDDD.push(cl.nome); continue; }
+        if(f.formatado !== cl.contato){
+          try{ await col('clientes').doc(cl.id).update({ contato: f.formatado }); corrigidos++; }
+          catch(e){ console.error('Falha ao padronizar contato de', cl.nome, e); }
+        } else { jaCertos++; }
+      }
+      if(corrigidos>0) await auditLog('Atualizou', 'clientes', `Padronização em lote: ${corrigidos} contato(s) reformatado(s) pro padrão "DD 9XXXX-XXXX"`);
+      let msg = `${corrigidos} contato(s) corrigido(s). ${jaCertos} já estavam no padrão.`;
+      if(semDDD.length) msg += `\n\nNão deu pra corrigir automaticamente (provavelmente falta o DDD) — confira manualmente: ${semDDD.join(', ')}.`;
+      alert(msg);
+    });
+  }
   const list = [...DB.clientes].sort((a,b)=>a.nome.localeCompare(b.nome));
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
     <thead><tr><th>Nome</th><th>Contato</th><th>Observações</th><th>Total Comprado</th><th></th></tr></thead>
