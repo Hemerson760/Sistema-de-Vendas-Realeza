@@ -26,6 +26,13 @@
   --line: #E5D9BC;
   --shadow: 0 10px 30px rgba(120,95,50,0.09);
 }
+/* Identidade visual própria do Ministério de Voluntariado — mesma estrutura, cor de destaque diferente,
+   pra nunca dar a impressão de que é a mesma "gaveta" de dados do Realeza. */
+body[data-ministerio="voluntariado"]{
+  --gold: #2F6F82;
+  --gold-soft: #5B99AC;
+  --gold-pale: #CFE6EC;
+}
 *{box-sizing:border-box;}
 html,body{margin:0;padding:0;}
 body{
@@ -189,6 +196,9 @@ input:focus, select:focus, textarea:focus{ outline:none; border-color: var(--gol
   </div>
 </div>
 
+<!-- ============ SELETOR DE MINISTÉRIO (só aparece pra quem tem acesso a mais de um) ============ -->
+<div id="ministerioScreen" class="login-wrap" style="display:none;"></div>
+
 <!-- ============ APP ============ -->
 <div id="app" style="display:none;">
   <div class="header">
@@ -198,9 +208,9 @@ input:focus, select:focus, textarea:focus{ outline:none; border-color: var(--gol
       <path d="M8 44 H56 V50 H8 Z"/>
       <circle class="jewel" cx="32" cy="40" r="2.4"/><circle class="jewel" cx="19" cy="40" r="1.7"/><circle class="jewel" cx="45" cy="40" r="1.7"/>
     </svg>
-    <div class="eyebrow">Almoços &amp; Cantinas</div>
-    <h1>Sistema Realeza</h1>
-    <div class="subtitle">Gestão de Vendas do Ministério</div>
+    <div class="eyebrow" id="appEyebrow">Almoços &amp; Cantinas</div>
+    <h1 id="appTitle">Sistema Realeza</h1>
+    <div class="subtitle" id="appSubtitle">Gestão de Vendas do Ministério</div>
     <svg class="flourish" viewBox="0 0 200 20"><path d="M0 10 H82"/><circle cx="100" cy="10" r="3"/><path d="M118 10 H200"/></svg>
   </div>
   <div class="tabs" id="tabs"></div>
@@ -228,6 +238,44 @@ firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.firestore();
 
+/* ==================== MINISTÉRIOS (multi-tenant) ====================
+   O sistema atende mais de um ministério dentro do MESMO app/Firebase.
+   Cada ministério tem sua própria "gaveta" de coleções no Firestore
+   (prefixo diferente), então os dados nunca se misturam e uma pessoa
+   só enxerga o que pertence ao(s) ministério(s) em que ela está
+   cadastrada na respectiva coleção "equipe". O Realeza usa prefixo
+   vazio (dado histórico, nunca migrado) e o Voluntariado usa
+   "voluntariado_" — tudo novo, isolado desde o primeiro registro. */
+const MINISTERIOS = [
+  {
+    id: 'realeza',
+    prefixo: '',
+    nome: 'Sistema Realeza',
+    eyebrow: 'Almoços & Cantinas',
+    subtitle: 'Gestão de Vendas do Ministério',
+    corGold: '#A9822F', corGoldSoft: '#C9A961', corGoldPale: '#E4D6AE',
+    mensagemNome: 'Sistema Realeza',
+    mensagemRodape: 'Ministério de Casais - Bodas 2026',
+    emoji: '👑',
+  },
+  {
+    id: 'voluntariado',
+    prefixo: 'voluntariado_',
+    nome: 'Sistema Voluntariado',
+    eyebrow: 'Ministério de Voluntariado',
+    subtitle: 'Gestão de Vendas do Ministério',
+    corGold: '#2F6F82', corGoldSoft: '#5B99AC', corGoldPale: '#CFE6EC',
+    mensagemNome: 'Sistema Voluntariado',
+    mensagemRodape: 'Ministério de Voluntariado',
+    emoji: '🤝',
+  },
+];
+let ministerioAtual = MINISTERIOS[0];
+/* Toda leitura/escrita no Firestore passa por aqui — troca só o prefixo,
+   nunca o nome-base, então cada função de render continua igual e só
+   precisa chamar col('reservas') em vez de col('reservas'). */
+function col(nomeBase){ return db.collection(ministerioAtual.prefixo + nomeBase); }
+
 /* ==================== ESTADO ==================== */
 const TABS = [
   {id:'dashboard', label:'Dashboard Geral'},
@@ -247,7 +295,8 @@ let charts = {};
 let currentUser = null;
 let currentUserRole = 'equipe'; // 'admin' ou 'equipe'
 let currentUserPermissoes = {}; // { eventos: bool, cardapio: bool }
-let listenersStarted = false;
+let currentAcessos = []; // [{ ministerio, papel, permissoes }] — todos os ministérios em que este e-mail está cadastrado
+let unsubscribers = []; // funções de cancelamento dos onSnapshot ativos (pra trocar de ministério sem misturar dado antigo)
 function isAdmin(){ return currentUserRole === 'admin'; }
 function podeEditar(area){ return isAdmin() || !!currentUserPermissoes[area]; }
 
@@ -295,7 +344,8 @@ function whatsappUrl(contato, mensagem){
   return `https://wa.me/${d}${mensagem ? '?text='+encodeURIComponent(mensagem) : ''}`;
 }
 function mensagemConfirmacao(r){
-  return `Olá ${r.cliente}! 👑\n\nSeu pedido no *Sistema Realeza* foi *confirmado*!\n\n🍽️ Item: ${r.item}\nQuantidade: ${r.qtd}\n💰 Valor: ${fmtMoney(valorReserva(r))}\n\n📅 Retirada: ${fmtDateBR(r.data)}, no culto das ${r.horario}\n\nAté lá! — Ministério de Casais - Bodas 2026`;
+  const m = ministerioAtual;
+  return `Olá ${r.cliente}! ${m.emoji}\n\nSeu pedido no *${m.mensagemNome}* foi *confirmado*!\n\n🍽️ Item: ${r.item}\nQuantidade: ${r.qtd}\n💰 Valor: ${fmtMoney(valorReserva(r))}\n\n📅 Retirada: ${fmtDateBR(r.data)}, no culto das ${r.horario}\n\nAté lá! — ${m.mensagemRodape}`;
 }
 function whatsappBtn(contato, extraStyle){
   const url = whatsappUrl(contato);
@@ -316,10 +366,10 @@ async function salvarContatoCliente(nome, telefone){
     const existente = DB.clientes.find(cl=>normalizarNome(cl.nome)===normalizarNome(nome));
     if(existente){
       if(existente.contato !== telefone){
-        await db.collection('clientes').doc(existente.id).set({contato: telefone}, {merge:true});
+        await col('clientes').doc(existente.id).set({contato: telefone}, {merge:true});
       }
     } else {
-      await db.collection('clientes').add({nome, contato: telefone, obs:''});
+      await col('clientes').add({nome, contato: telefone, obs:''});
     }
   }catch(e){ console.error('Falha ao salvar contato do cliente', e); }
 }
@@ -354,7 +404,7 @@ function encontrarClienteSimilar(nome){
 /* ==================== AUDITORIA ==================== */
 async function auditLog(acao, colecao, resumo){
   try{
-    await db.collection('auditoria').add({
+    await col('auditoria').add({
       usuario: currentUser.email, nome: userName(),
       acao, colecao, resumo,
       timestamp: firebase.firestore.FieldValue.serverTimestamp()
@@ -420,82 +470,203 @@ auth.onAuthStateChanged(async user=>{
   document.getElementById('bootLoading').style.display = 'none';
 
   if(user){
-    // Verifica se este e-mail está na lista de autorizados (coleção "equipe")
-    let autorizado = false;
-    let papel = 'equipe';
-    let permissoes = {};
-    try{
-      const doc = await db.collection('equipe').doc(user.email.toLowerCase()).get();
-      autorizado = doc.exists;
-      if(autorizado){
-        papel = (doc.data().papel === 'admin') ? 'admin' : 'equipe';
-        permissoes = doc.data().permissoes || {};
-      }
-    }catch(e){
-      console.error('Erro ao checar autorização', e);
+    // Verifica, ministério por ministério, se este e-mail está autorizado (coleção "equipe" própria de cada um).
+    // Cada checagem é isolada (try/catch individual) porque não ter acesso a um ministério gera erro de
+    // permissão no Firestore — isso é normal e não pode impedir a checagem dos demais ministérios.
+    const acessos = [];
+    for(const m of MINISTERIOS){
+      try{
+        const doc = await db.collection(m.prefixo+'equipe').doc(user.email.toLowerCase()).get();
+        if(doc.exists){
+          acessos.push({ ministerio: m, papel: (doc.data().papel==='admin')?'admin':'equipe', permissoes: doc.data().permissoes || {} });
+        }
+      }catch(e){ /* sem acesso a este ministério — segue tentando os outros */ }
     }
-    if(!autorizado){
-      showLoginError(`O e-mail ${user.email} ainda não tem acesso liberado. Peça ao administrador do sistema para autorizar.`);
+
+    if(acessos.length===0){
+      showLoginError(`O e-mail ${user.email} ainda não tem acesso liberado em nenhum ministério deste sistema. Peça ao administrador do ministério para autorizar.`);
       await auth.signOut();
       currentUser = null;
+      currentAcessos = [];
       document.getElementById('app').style.display = 'none';
+      document.getElementById('ministerioScreen').style.display = 'none';
       document.getElementById('loginScreen').style.display = 'block';
       return;
     }
+
     currentUser = user;
-    currentUserRole = papel;
-    currentUserPermissoes = permissoes;
-    document.getElementById('loginScreen').style.display = 'none';
-    document.getElementById('app').style.display = 'block';
-    document.getElementById('userBadge').innerHTML =
-      `<span class="name">${escapeHtml(userName())} ${isAdmin() ? '<span class=\"role-badge\">admin</span>' : ''}</span><button id="btnLogout">Sair</button>`;
-    document.getElementById('btnLogout').addEventListener('click', ()=>auth.signOut());
-    if(!listenersStarted){ startListeners(); listenersStarted = true; } else { render(); }
+    currentAcessos = acessos;
+
+    // Entra direto sempre que só há UM ministério com acesso — mesmo que essa pessoa também pudesse
+    // "ativar" outro ministério como admin. Essa opção continua disponível a qualquer momento no botão
+    // "Trocar Ministério" do cabeçalho, sem precisar forçar uma tela extra em todo login de quem só usa um.
+    if(acessos.length===1){
+      await entrarNoMinisterio(acessos[0].ministerio, acessos[0].papel, acessos[0].permissoes);
+    } else {
+      renderSeletorMinisterio(false);
+    }
   } else {
     currentUser = null;
+    currentAcessos = [];
+    pararListeners();
     document.getElementById('app').style.display = 'none';
+    document.getElementById('ministerioScreen').style.display = 'none';
     document.getElementById('loginScreen').style.display = 'block';
   }
 });
 
+/* ==================== TROCA DE MINISTÉRIO ==================== */
+function podeTrocarMinisterio(){
+  if(!currentAcessos || !currentAcessos.length) return false;
+  if(currentAcessos.length>1) return true;
+  const temAtivavel = currentAcessos.some(a=>a.papel==='admin') && MINISTERIOS.some(m=>!currentAcessos.find(a=>a.ministerio.id===m.id));
+  return temAtivavel;
+}
+function aplicarTemaMinisterio(m){
+  document.body.dataset.ministerio = m.id;
+  document.title = m.nome + ' — Vendas do Ministério';
+  const eyebrowEl = document.getElementById('appEyebrow');
+  const titleEl = document.getElementById('appTitle');
+  const subtitleEl = document.getElementById('appSubtitle');
+  if(eyebrowEl) eyebrowEl.textContent = m.eyebrow;
+  if(titleEl) titleEl.textContent = m.nome;
+  if(subtitleEl) subtitleEl.textContent = m.subtitle;
+}
+function atualizarUserBadge(){
+  const badge = document.getElementById('userBadge');
+  badge.innerHTML =
+    `<span class="name">${escapeHtml(userName())} ${isAdmin() ? '<span class=\"role-badge\">admin</span>' : ''}</span>` +
+    (podeTrocarMinisterio() ? ` <button id="btnTrocarMinisterio" title="Trocar de ministério">${escapeHtml(ministerioAtual.nome)} ⇄</button>` : '') +
+    ` <button id="btnLogout">Sair</button>`;
+  document.getElementById('btnLogout').addEventListener('click', ()=>auth.signOut());
+  const btnTroca = document.getElementById('btnTrocarMinisterio');
+  if(btnTroca) btnTroca.addEventListener('click', ()=>renderSeletorMinisterio(true));
+}
+async function entrarNoMinisterio(m, papel, permissoes){
+  ministerioAtual = m;
+  currentUserRole = papel;
+  currentUserPermissoes = permissoes || {};
+  currentTab = 'dashboard';
+  aplicarTemaMinisterio(m);
+  document.getElementById('ministerioScreen').style.display = 'none';
+  document.getElementById('loginScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  atualizarUserBadge();
+  pararListeners();
+  DB = { eventos:[], cardapio:[], reservas:[], despesas:[], clientes:[], auditoria:[], equipe:[] };
+  startListeners();
+}
+function renderSeletorMinisterio(permitirCancelar){
+  const box = document.getElementById('ministerioScreen');
+  const naoAtivados = MINISTERIOS.filter(m=>!currentAcessos.find(a=>a.ministerio.id===m.id));
+  const podeAtivar = currentAcessos.some(a=>a.papel==='admin') && naoAtivados.length>0;
+  box.innerHTML = `
+    <div class="header" style="padding-top:0;">
+      <svg class="crown" viewBox="0 0 64 64">
+        <path d="M8 44 L11 22 L23 33 L32 10 L41 33 L53 22 L56 44 Z"/>
+        <path d="M8 44 H56 V50 H8 Z"/>
+        <circle class="jewel" cx="32" cy="40" r="2.4"/><circle class="jewel" cx="19" cy="40" r="1.7"/><circle class="jewel" cx="45" cy="40" r="1.7"/>
+      </svg>
+      <div class="eyebrow">Selecione</div>
+      <h1>Qual ministério?</h1>
+    </div>
+    <div class="login-card">
+      ${permitirCancelar ? `<button class="btn secondary" id="msCancelar" style="width:100%; margin-bottom:16px;">Cancelar e voltar</button>` : ''}
+      <div class="lead">Você tem acesso a mais de um ministério neste sistema. Escolha qual quer gerenciar agora — dá pra trocar depois.</div>
+      <div id="msCards"></div>
+      ${podeAtivar ? `<div style="margin-top:20px; padding-top:16px; border-top:1px solid var(--line);">
+        <div class="small-note" style="margin-bottom:10px;">Como administrador de outro ministério, você também pode ativar um novo ministério pra você neste mesmo sistema — os dados continuam 100% separados:</div>
+        <div id="msAtivar"></div>
+      </div>` : ''}
+    </div>`;
+  if(permitirCancelar){
+    box.querySelector('#msCancelar').addEventListener('click', ()=>{
+      box.style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+    });
+  }
+  const cardsWrap = box.querySelector('#msCards');
+  currentAcessos.forEach(a=>{
+    const btn = el(`<button class="btn secondary" style="width:100%; margin-bottom:8px; text-align:left;">${escapeHtml(a.ministerio.nome)} <span class="small-note" style="margin:0;">(${a.papel==='admin'?'administrador':'equipe'})</span></button>`);
+    btn.addEventListener('click', ()=>entrarNoMinisterio(a.ministerio, a.papel, a.permissoes));
+    cardsWrap.appendChild(btn);
+  });
+  if(podeAtivar){
+    const ativarWrap = box.querySelector('#msAtivar');
+    naoAtivados.forEach(m=>{
+      const btn = el(`<button class="btn" style="width:100%; margin-bottom:8px;">+ Ativar ${escapeHtml(m.nome)}</button>`);
+      btn.addEventListener('click', ()=>ativarNovoMinisterio(m));
+      ativarWrap.appendChild(btn);
+    });
+  }
+  document.getElementById('app').style.display = 'none';
+  document.getElementById('loginScreen').style.display = 'none';
+  box.style.display = 'block';
+}
+async function ativarNovoMinisterio(m){
+  const ok = confirm(`Ativar o "${m.nome}" pra você, como administrador? Isso cria seu acesso nesse ministério, com os dados totalmente separados do(s) outro(s).`);
+  if(!ok) return;
+  try{
+    await db.collection(m.prefixo+'equipe').doc(currentUser.email.toLowerCase()).set({
+      nome: userName(), papel: 'admin', permissoes: { eventos:true, cardapio:true }
+    });
+    try{
+      await db.collection(m.prefixo+'auditoria').add({
+        usuario: currentUser.email, nome: userName(), acao: 'Criou', colecao: 'equipe',
+        resumo: `Ministério "${m.nome}" ativado por ${userName()} (primeiro administrador)`,
+        timestamp: firebase.firestore.FieldValue.serverTimestamp()
+      });
+    }catch(e){ /* auditoria é best-effort */ }
+    currentAcessos.push({ ministerio: m, papel: 'admin', permissoes: { eventos:true, cardapio:true } });
+    await entrarNoMinisterio(m, 'admin', { eventos:true, cardapio:true });
+  }catch(e){
+    alert('Não foi possível ativar esse ministério agora. Pode ser que as regras do Firestore ainda não tenham sido atualizadas para permitir isso — confira com quem administra o sistema.');
+    console.error(e);
+  }
+}
+
 /* ==================== LISTENERS EM TEMPO REAL ==================== */
+function pararListeners(){
+  unsubscribers.forEach(u=>{ try{ u(); }catch(e){} });
+  unsubscribers = [];
+}
 function startListeners(){
-  db.collection('eventos').onSnapshot(snap=>{
+  unsubscribers.push(col('eventos').onSnapshot(snap=>{
     DB.eventos = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
-  }, e=>console.error(e));
+  }, e=>console.error(e)));
 
-  db.collection('cardapio').onSnapshot(snap=>{
+  unsubscribers.push(col('cardapio').onSnapshot(snap=>{
     DB.cardapio = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
-  }, e=>console.error(e));
+  }, e=>console.error(e)));
 
-  db.collection('reservas').onSnapshot(snap=>{
+  unsubscribers.push(col('reservas').onSnapshot(snap=>{
     DB.reservas = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
-  }, e=>console.error(e));
+  }, e=>console.error(e)));
 
-  db.collection('despesas').onSnapshot(snap=>{
+  unsubscribers.push(col('despesas').onSnapshot(snap=>{
     DB.despesas = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
-  }, e=>console.error(e));
+  }, e=>console.error(e)));
 
-  db.collection('clientes').onSnapshot(snap=>{
+  unsubscribers.push(col('clientes').onSnapshot(snap=>{
     DB.clientes = snap.docs.map(d=>({id:d.id, ...d.data()}));
     render();
-  }, e=>console.error(e));
+  }, e=>console.error(e)));
 
-  db.collection('equipe').onSnapshot(snap=>{
+  unsubscribers.push(col('equipe').onSnapshot(snap=>{
     DB.equipe = snap.docs.map(d=>({id:d.id, ...d.data()}));
     if(currentTab==='equipe') render();
-  }, e=>console.error(e));
+  }, e=>console.error(e)));
 
   // Auditoria só é lida por administradores (regra de segurança bloqueia os demais)
   if(isAdmin()){
-    db.collection('auditoria').orderBy('timestamp','desc').limit(300).onSnapshot(snap=>{
+    unsubscribers.push(col('auditoria').orderBy('timestamp','desc').limit(300).onSnapshot(snap=>{
       DB.auditoria = snap.docs.map(d=>({id:d.id, ...d.data()}));
       if(currentTab==='auditoria') render();
-    }, e=>console.error(e));
+    }, e=>console.error(e)));
   }
 
   render();
@@ -611,7 +782,7 @@ function renderDashboardGeral(c){
   charts.tipo = new Chart(document.getElementById('chartTipo'), {
     type:'bar',
     data:{ labels: compData.map(x=>x.tipo), datasets:[
-      {label:'Receita', data: compData.map(x=>x.receita), backgroundColor:'#A9822F', borderRadius:4},
+      {label:'Receita', data: compData.map(x=>x.receita), backgroundColor: ministerioAtual.corGold, borderRadius:4},
       {label:'Despesa', data: compData.map(x=>x.despesa), backgroundColor:'#C08B6E', borderRadius:4},
       {label:'Lucro', data: compData.map(x=>x.receita-x.despesa), backgroundColor:'#5C7A4B', borderRadius:4},
     ]},
@@ -631,12 +802,12 @@ function renderDashboardGeral(c){
   charts.eventos = new Chart(document.getElementById('chartEventos'), {
     type:'bar',
     data:{ labels: eventoStats.map(e=>e.label), datasets:[
-      {label:'Lucro', data: eventoStats.map(e=>e.lucro), backgroundColor: eventoStats.map(e=>e.lucro>=0?'#A9822F':'#A5493A'), borderRadius:4},
+      {label:'Lucro', data: eventoStats.map(e=>e.lucro), backgroundColor: eventoStats.map(e=>e.lucro>=0?ministerioAtual.corGold:'#A5493A'), borderRadius:4},
     ]},
     options:{ indexAxis:'y', responsive:true, plugins:{legend:{display:false}} }
   });
   if(charts.itens) charts.itens.destroy();
-  const paletaItens = ['#A9822F','#5C7A4B','#A5493A','#8B7B62','#C9A961','#6E8FA3','#B08D3E','#7A5C3E','#4C6B3C','#9C5A4A'];
+  const paletaItens = [ministerioAtual.corGold,'#5C7A4B','#A5493A','#8B7B62','#C9A961','#6E8FA3','#B08D3E','#7A5C3E','#4C6B3C','#9C5A4A'];
   charts.itens = new Chart(document.getElementById('chartItens'), {
     type:'bar',
     data:{ labels: ranking.map(r=>r[0]), datasets:[
@@ -760,7 +931,7 @@ function renderDashboardEvento(c){
   if(charts.horario) charts.horario.destroy();
   charts.horario = new Chart(document.getElementById('chartHorario'), {
     type:'bar',
-    data:{ labels: horData.map(x=>x.h), datasets:[{label:'Valor Vendido (R$)', data: horData.map(x=>x.valor), backgroundColor:'#A9822F', borderRadius:4}] },
+    data:{ labels: horData.map(x=>x.h), datasets:[{label:'Valor Vendido (R$)', data: horData.map(x=>x.valor), backgroundColor: ministerioAtual.corGold, borderRadius:4}] },
     options:{ responsive:true, plugins:{legend:{display:false}} }
   });
 }
@@ -833,7 +1004,7 @@ function renderEventos(c){
 
       if(editingEventoId){
         try{
-          await db.collection('eventos').doc(editingEventoId).update({ data, tipo, nomeEvento, cultos, status });
+          await col('eventos').doc(editingEventoId).update({ data, tipo, nomeEvento, cultos, status });
           await auditLog('Atualizou', 'eventos', `Evento ${fmtDateBR(data)} — ${tipo}${nomeEvento?` (${nomeEvento})`:''} editado`);
 
           const mudouIdentidade = editingEventoOriginal && (editingEventoOriginal.data!==data || editingEventoOriginal.tipo!==tipo);
@@ -844,9 +1015,9 @@ function renderEventos(c){
               const sincronizar = confirm(`A data/tipo deste evento mudou de "${fmtDateBR(editingEventoOriginal.data)} — ${editingEventoOriginal.tipo}" para "${fmtDateBR(data)} — ${tipo}".\n\nExistem ${qtdReservas} reserva(s) e ${qtdDespesas} despesa(s) lançadas com os dados antigos. Deseja atualizá-las também para os novos dados?`);
               if(sincronizar){
                 const reservasAfetadas = DB.reservas.filter(r=>r.data===editingEventoOriginal.data && r.tipo===editingEventoOriginal.tipo);
-                for(const r of reservasAfetadas){ await db.collection('reservas').doc(r.id).update({ data, tipo }); }
+                for(const r of reservasAfetadas){ await col('reservas').doc(r.id).update({ data, tipo }); }
                 const despesasAfetadas = DB.despesas.filter(d=>d.data===editingEventoOriginal.data && d.tipo===editingEventoOriginal.tipo);
-                for(const d of despesasAfetadas){ await db.collection('despesas').doc(d.id).update({ data, tipo }); }
+                for(const d of despesasAfetadas){ await col('despesas').doc(d.id).update({ data, tipo }); }
                 await auditLog('Atualizou', 'eventos', `${reservasAfetadas.length} reserva(s) e ${despesasAfetadas.length} despesa(s) atualizadas para o novo evento`);
               }
             }
@@ -856,7 +1027,7 @@ function renderEventos(c){
         return;
       }
 
-      await db.collection('eventos').add({ data, tipo, nomeEvento, cultos, status });
+      await col('eventos').add({ data, tipo, nomeEvento, cultos, status });
       await auditLog('Criou', 'eventos', `Evento ${fmtDateBR(data)} — ${tipo}${nomeEvento?` (${nomeEvento})`:''}`);
     });
   } else {
@@ -884,7 +1055,7 @@ function renderEventos(c){
     btn.addEventListener('click', async ()=>{
       if(!confirm('Excluir este evento? (reservas/despesas ligadas a ele não serão apagadas)')) return;
       const ev = DB.eventos.find(e=>e.id===btn.dataset.del);
-      await db.collection('eventos').doc(btn.dataset.del).delete();
+      await col('eventos').doc(btn.dataset.del).delete();
       await auditLog('Excluiu', 'eventos', `Evento ${fmtDateBR(ev.data)} — ${ev.tipo}`);
     });
   });
@@ -1120,7 +1291,7 @@ function renderCardapio(c){
     try{
       if(cardFormState.editingId){
         const itemAntigo = DB.cardapio.find(i=>i.id===cardFormState.editingId);
-        await db.collection('cardapio').doc(cardFormState.editingId).set(docObj);
+        await col('cardapio').doc(cardFormState.editingId).set(docObj);
         await auditLog('Atualizou', 'cardapio', `Item "${itemAntigo?itemAntigo.item:item}" editado${itemAntigo && itemAntigo.item!==item ? ` (novo nome: "${item}")` : ''}`);
 
         if(itemAntigo && itemAntigo.item !== item){
@@ -1128,13 +1299,13 @@ function renderCardapio(c){
           if(atualizarReservas){
             const afetadas = DB.reservas.filter(r=>r.item===itemAntigo.item);
             for(const r of afetadas){
-              await db.collection('reservas').doc(r.id).update({ item });
+              await col('reservas').doc(r.id).update({ item });
             }
             await auditLog('Atualizou', 'reservas', `Nome do item atualizado em ${afetadas.length} pedido(s): "${itemAntigo.item}" → "${item}"`);
           }
         }
       } else {
-        await db.collection('cardapio').add(docObj);
+        await col('cardapio').add(docObj);
         await auditLog('Criou', 'cardapio', `Item "${item}" (${fmtMoney(preco)})`);
       }
       limparForm();
@@ -1192,7 +1363,7 @@ function renderCardapio(c){
     btn.addEventListener('click', async ()=>{
       if(!confirm('Excluir este item do cardápio?')) return;
       const item = DB.cardapio.find(i=>i.id===btn.dataset.del);
-      await db.collection('cardapio').doc(btn.dataset.del).delete();
+      await col('cardapio').doc(btn.dataset.del).delete();
       await auditLog('Excluiu', 'cardapio', `Item "${item.item}"`);
     });
   });
@@ -1539,7 +1710,7 @@ function renderReservas(c){
         if(itemObj.limite!==null && itemObj.limite!==undefined && itemObj.limite>0){
           let jaReservadoFresco;
           try{
-            const snap = await db.collection('reservas')
+            const snap = await col('reservas')
               .where('data','==',sel.data).where('tipo','==',sel.tipo).where('item','==',itemObj.item).get();
             jaReservadoFresco = snap.docs.filter(d=>d.id!==editingReservaId).reduce((s,d)=>s+(d.data().qtd||0),0);
           }catch(e){
@@ -1585,7 +1756,7 @@ function renderReservas(c){
         };
 
         try{
-          await db.collection('reservas').doc(editingReservaId).update(dadosReserva);
+          await col('reservas').doc(editingReservaId).update(dadosReserva);
           await auditLog('Atualizou', 'reservas', `Reserva de ${cliente} editada — ${itemObj.item} (${qtd}x, ${fmtMoney(valorTotal)})${ajusteAplicado?` [${descreverAjuste(ajusteTipo, ajusteValor, ajusteAplicado)}]`:''}`);
           await salvarContatoCliente(cliente, telefone);
           limparFormReserva();
@@ -1604,7 +1775,7 @@ function renderReservas(c){
           const qtdCarrinho = carrinho.filter(l=>l.item===nomeItem).reduce((s,l)=>s+l.qtd,0);
           let jaReservadoFresco;
           try{
-            const snap = await db.collection('reservas')
+            const snap = await col('reservas')
               .where('data','==',sel.data).where('tipo','==',sel.tipo).where('item','==',nomeItem).get();
             jaReservadoFresco = snap.docs.reduce((s,d)=>s+(d.data().qtd||0),0);
           }catch(e){
@@ -1631,7 +1802,7 @@ function renderReservas(c){
           entregue: entregueSel.value,
           vendedor,
         };
-        await db.collection('reservas').add(dadosReserva);
+        await col('reservas').add(dadosReserva);
         await auditLog('Criou', 'reservas', `Pedido de ${cliente} — ${linha.item} (${linha.qtd}x) em ${fmtDateBR(sel.data)}, horário ${linha.horario}${linha.ajusteAplicado?`, com ${descreverAjuste(linha.ajusteTipo, linha.ajusteValor, linha.ajusteAplicado)}`:''}`);
       }
       await salvarContatoCliente(cliente, telefone);
@@ -1770,19 +1941,19 @@ function renderReservas(c){
   tableWrap.querySelectorAll('[data-pago]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const r = DB.reservas.find(x=>x.id===btn.dataset.pago);
     const novo = r.pago==='Sim'?'Não':'Sim';
-    await db.collection('reservas').doc(r.id).update({pago:novo});
+    await col('reservas').doc(r.id).update({pago:novo});
     await auditLog('Atualizou', 'reservas', `Pagamento de ${r.cliente} (${r.item}): ${r.pago} → ${novo}`);
   }));
   tableWrap.querySelectorAll('[data-ent]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const r = DB.reservas.find(x=>x.id===btn.dataset.ent);
     const novo = r.entregue==='Sim'?'Não':'Sim';
-    await db.collection('reservas').doc(r.id).update({entregue:novo});
+    await col('reservas').doc(r.id).update({entregue:novo});
     await auditLog('Atualizou', 'reservas', `Entrega de ${r.cliente} (${r.item}): ${r.entregue} → ${novo}`);
   }));
   tableWrap.querySelectorAll('[data-montada]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const r = DB.reservas.find(x=>x.id===btn.dataset.montada);
     const novo = r.montada==='Sim'?'Não':'Sim';
-    await db.collection('reservas').doc(r.id).update({montada:novo});
+    await col('reservas').doc(r.id).update({montada:novo});
     await auditLog('Atualizou', 'reservas', `Montagem de ${r.cliente} (${r.item}): ${r.montada||'Não'} → ${novo}`);
   }));
   tableWrap.querySelectorAll('[data-confirmar]').forEach(btn=>btn.addEventListener('click', async ()=>{
@@ -1796,14 +1967,14 @@ function renderReservas(c){
     const url = whatsappUrl(contato, mensagemConfirmacao(r));
     window.open(url, '_blank');
     try{
-      await db.collection('reservas').doc(r.id).update({ confirmadoEm: firebase.firestore.FieldValue.serverTimestamp(), confirmadoPor: userName() });
+      await col('reservas').doc(r.id).update({ confirmadoEm: firebase.firestore.FieldValue.serverTimestamp(), confirmadoPor: userName() });
       await auditLog('Atualizou', 'reservas', `Confirmação enviada por WhatsApp para ${r.cliente} (${r.item})`);
     }catch(e){ console.error('Falha ao registrar confirmação', e); }
   }));
   tableWrap.querySelectorAll('[data-del]').forEach(btn=>btn.addEventListener('click', async ()=>{
     if(!confirm('Excluir este pedido?')) return;
     const r = DB.reservas.find(x=>x.id===btn.dataset.del);
-    await db.collection('reservas').doc(r.id).delete();
+    await col('reservas').doc(r.id).delete();
     await auditLog('Excluiu', 'reservas', `Pedido de ${r.cliente} — ${r.item} (${fmtMoney(valorReserva(r))}, pago: ${r.pago})`);
   }));
 }
@@ -1892,7 +2063,7 @@ function renderDespesas(c){
 
       if(editingDespesaId){
         try{
-          await db.collection('despesas').doc(editingDespesaId).update(dadosDespesa);
+          await col('despesas').doc(editingDespesaId).update(dadosDespesa);
           await auditLog('Atualizou', 'despesas', `Despesa "${descricao}" editada (${fmtMoney(valor)})`);
           limparFormDespesa();
         }catch(e){ alert('Não foi possível salvar a edição.'); console.error(e); }
@@ -1900,7 +2071,7 @@ function renderDespesas(c){
       }
 
       dadosDespesa.lancadoPor = userName();
-      await db.collection('despesas').add(dadosDespesa);
+      await col('despesas').add(dadosDespesa);
       await auditLog('Criou', 'despesas', `Despesa "${descricao}" (${fmtMoney(valor)}) em ${fmtDateBR(sel.data)}`);
     });
   }
@@ -1974,7 +2145,7 @@ function renderDespesas(c){
   tableWrap.querySelectorAll('[data-del]').forEach(btn=>btn.addEventListener('click', async ()=>{
     if(!confirm('Excluir esta despesa?')) return;
     const d = DB.despesas.find(x=>x.id===btn.dataset.del);
-    await db.collection('despesas').doc(d.id).delete();
+    await col('despesas').doc(d.id).delete();
     await auditLog('Excluiu', 'despesas', `Despesa "${d.descricao}" (${fmtMoney(d.valor)})`);
   }));
 }
@@ -2019,7 +2190,7 @@ function renderClientes(c){
     if(editingClienteId){
       const clienteAntigo = DB.clientes.find(cl=>cl.id===editingClienteId);
       try{
-        await db.collection('clientes').doc(editingClienteId).update({ nome, contato, obs });
+        await col('clientes').doc(editingClienteId).update({ nome, contato, obs });
         await auditLog('Atualizou', 'clientes', `Cliente "${clienteAntigo.nome}" editado${clienteAntigo.nome!==nome?` (novo nome: "${nome}")`:''}`);
 
         if(clienteAntigo && clienteAntigo.nome !== nome){
@@ -2027,7 +2198,7 @@ function renderClientes(c){
           if(atualizarReservas){
             const afetadas = DB.reservas.filter(r=>normalizarNome(r.cliente)===normalizarNome(clienteAntigo.nome));
             for(const r of afetadas){
-              await db.collection('reservas').doc(r.id).update({ cliente: nome });
+              await col('reservas').doc(r.id).update({ cliente: nome });
             }
             await auditLog('Atualizou', 'reservas', `Nome do cliente atualizado em ${afetadas.length} pedido(s): "${clienteAntigo.nome}" → "${nome}"`);
           }
@@ -2037,7 +2208,7 @@ function renderClientes(c){
       return;
     }
 
-    await db.collection('clientes').add({ nome, contato, obs });
+    await col('clientes').add({ nome, contato, obs });
     await auditLog('Criou', 'clientes', `Cliente "${nome}"`);
     nomeInput.value=''; contatoInput.value=''; obsInput.value='';
   });
@@ -2068,7 +2239,7 @@ function renderClientes(c){
   tableWrap.querySelectorAll('[data-del]').forEach(btn=>btn.addEventListener('click', async ()=>{
     if(!confirm('Excluir este cliente?')) return;
     const cl = DB.clientes.find(x=>x.id===btn.dataset.del);
-    await db.collection('clientes').doc(cl.id).delete();
+    await col('clientes').doc(cl.id).delete();
     await auditLog('Excluiu', 'clientes', `Cliente "${cl.nome}"`);
   }));
 }
@@ -2146,7 +2317,7 @@ function renderEquipe(c){
     const permissoes = { eventos: form.querySelector('#f_permEventos').checked, cardapio: form.querySelector('#f_permCardapio').checked };
     if(!email || !email.includes('@') || !nome){ alert('Preencha e-mail válido e nome.'); return; }
     try{
-      await db.collection('equipe').doc(email).set({ nome, papel, permissoes }, {merge:true});
+      await col('equipe').doc(email).set({ nome, papel, permissoes }, {merge:true});
       await auditLog(editingEmail?'Atualizou':'Criou', 'equipe', `Acesso de ${nome} (${email}): papel ${papel}, permissões ${JSON.stringify(permissoes)}`);
       limparFormEquipe();
     }catch(e){ alert('Não foi possível salvar. Confira se você é administrador.'); console.error(e); }
@@ -2191,7 +2362,7 @@ function renderEquipe(c){
     const u = DB.equipe.find(x=>x.id===btn.dataset.toggle);
     const novoPapel = u.papel==='admin' ? 'equipe' : 'admin';
     try{
-      await db.collection('equipe').doc(u.id).set({papel:novoPapel}, {merge:true});
+      await col('equipe').doc(u.id).set({papel:novoPapel}, {merge:true});
       await auditLog('Atualizou', 'equipe', `Papel de ${u.nome} (${u.id}): ${u.papel||'equipe'} → ${novoPapel}`);
     }catch(e){ alert('Não foi possível alterar. Confira se você é administrador.'); }
   }));
@@ -2199,7 +2370,7 @@ function renderEquipe(c){
     if(!confirm('Remover o acesso desta pessoa? Ela não vai mais conseguir entrar no sistema.')) return;
     const u = DB.equipe.find(x=>x.id===btn.dataset.del);
     try{
-      await db.collection('equipe').doc(u.id).delete();
+      await col('equipe').doc(u.id).delete();
       await auditLog('Excluiu', 'equipe', `Acesso removido de ${u.nome} (${u.id})`);
     }catch(e){ alert('Não foi possível remover. Confira se você é administrador.'); }
   }));
