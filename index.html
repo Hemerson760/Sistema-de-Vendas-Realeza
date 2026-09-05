@@ -1,75 +1,30 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    function isMember() { return request.auth != null && exists(/databases/$(database)/documents/equipe/$(request.auth.token.email)); }
+    function isAdmin() { return request.auth != null && get(/databases/$(database)/documents/equipe/$(request.auth.token.email)).data.papel == 'admin'; }
+    function podeEventos() { return isAdmin() || (isMember() && get(/databases/$(database)/documents/equipe/$(request.auth.token.email)).data.permissoes.eventos == true); }
+    function podeCardapio() { return isAdmin() || (isMember() && get(/databases/$(database)/documents/equipe/$(request.auth.token.email)).data.permissoes.cardapio == true); }
 
-    /* ---------- REALEZA (sem prefixo, dado existente — igual a antes) ---------- */
-    function isMember() {
-      return request.auth != null &&
-        exists(/databases/$(database)/documents/equipe/$(request.auth.token.email));
-    }
-    function isAdmin() {
-      return request.auth != null &&
-        get(/databases/$(database)/documents/equipe/$(request.auth.token.email)).data.papel == 'admin';
-    }
-    function podeEventos() {
-      return isAdmin() || (isMember() &&
-        get(/databases/$(database)/documents/equipe/$(request.auth.token.email)).data.permissoes.eventos == true);
-    }
-    function podeCardapio() {
-      return isAdmin() || (isMember() &&
-        get(/databases/$(database)/documents/equipe/$(request.auth.token.email)).data.permissoes.cardapio == true);
-    }
-
-    match /equipe/{email} {
-      allow read: if isMember();
-      allow write: if isAdmin();
-    }
-    match /auditoria/{doc} {
-      allow read: if isAdmin();
-      allow create: if isMember();
-      allow update, delete: if false;
-    }
+    match /equipe/{email} { allow read: if isMember(); allow write: if isAdmin(); }
+    match /auditoria/{doc} { allow read: if isAdmin(); allow create: if isMember(); allow update, delete: if false; }
     match /eventos/{doc}  { allow read: if isMember(); allow write: if podeEventos(); }
     match /cardapio/{doc} { allow read: if isMember(); allow write: if podeCardapio(); }
     match /reservas/{doc} { allow read, write: if isMember(); }
     match /despesas/{doc} { allow read, write: if isMember(); }
     match /clientes/{doc} { allow read, write: if isMember(); }
 
-    /* ---------- VOLUNTARIADO (prefixo voluntariado_, ministério novo — totalmente separado) ---------- */
-    function isMemberVol() {
-      return request.auth != null &&
-        exists(/databases/$(database)/documents/voluntariado_equipe/$(request.auth.token.email));
-    }
-    function isAdminVol() {
-      return request.auth != null &&
-        get(/databases/$(database)/documents/voluntariado_equipe/$(request.auth.token.email)).data.papel == 'admin';
-    }
-    function podeEventosVol() {
-      return isAdminVol() || (isMemberVol() &&
-        get(/databases/$(database)/documents/voluntariado_equipe/$(request.auth.token.email)).data.permissoes.eventos == true);
-    }
-    function podeCardapioVol() {
-      return isAdminVol() || (isMemberVol() &&
-        get(/databases/$(database)/documents/voluntariado_equipe/$(request.auth.token.email)).data.permissoes.cardapio == true);
-    }
+    function isMemberVol() { return request.auth != null && exists(/databases/$(database)/documents/voluntariado_equipe/$(request.auth.token.email)); }
+    function isAdminVol() { return request.auth != null && get(/databases/$(database)/documents/voluntariado_equipe/$(request.auth.token.email)).data.papel == 'admin'; }
+    function podeEventosVol() { return isAdminVol() || (isMemberVol() && get(/databases/$(database)/documents/voluntariado_equipe/$(request.auth.token.email)).data.permissoes.eventos == true); }
+    function podeCardapioVol() { return isAdminVol() || (isMemberVol() && get(/databases/$(database)/documents/voluntariado_equipe/$(request.auth.token.email)).data.permissoes.cardapio == true); }
 
     match /voluntariado_equipe/{email} {
       allow read: if isMemberVol();
       allow update, delete: if isAdminVol();
-      // Um admin do Voluntariado já ativo pode cadastrar QUALQUER pessoa nova (igual ao Realeza) —
-      // OU, se ainda não existir nenhum admin lá, quem já é admin de outro ministério pode se
-      // auto-cadastrar como o primeiro administrador (bootstrap, sem precisar do Console).
-      allow create: if isAdminVol() ||
-        (request.auth != null &&
-         request.auth.token.email == email &&
-         !exists(/databases/$(database)/documents/voluntariado_equipe/$(email)) &&
-         isAdmin());
+      allow create: if isAdminVol() || (request.auth != null && request.auth.token.email == email && !exists(/databases/$(database)/documents/voluntariado_equipe/$(email)) && isAdmin());
     }
-    match /voluntariado_auditoria/{doc} {
-      allow read: if isAdminVol();
-      allow create: if isMemberVol();
-      allow update, delete: if false;
-    }
+    match /voluntariado_auditoria/{doc} { allow read: if isAdminVol(); allow create: if isMemberVol(); allow update, delete: if false; }
     match /voluntariado_eventos/{doc}  { allow read: if isMemberVol(); allow write: if podeEventosVol(); }
     match /voluntariado_cardapio/{doc} { allow read: if isMemberVol(); allow write: if podeCardapioVol(); }
     match /voluntariado_reservas/{doc} { allow read, write: if isMemberVol(); }
