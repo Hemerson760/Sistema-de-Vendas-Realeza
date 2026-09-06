@@ -97,6 +97,7 @@ tbody tr.pend{ background: #FBF0EC; }
 .badge{ display:inline-block; padding:2px 10px; border-radius: 20px; font-size:11px; font-family:'Inter',sans-serif; font-weight:600; letter-spacing:.2px; }
 .badge.sim{ background:#EBF1E6; color: var(--ok); }
 .badge.nao{ background:#F7E9E5; color: var(--warn); }
+.badge.parcial{ background:#F6EEDD; color: var(--gold); }
 .badge.acao-criou{ background:#EBF1E6; color: var(--ok); }
 .badge.acao-atualizou{ background:#F6EEDD; color: var(--gold); }
 .badge.acao-excluiu{ background:#F7E9E5; color: var(--warn); }
@@ -116,6 +117,7 @@ tbody tr.pend{ background: #FBF0EC; }
 .pills-row{ display:flex; flex-wrap:wrap; gap:8px; margin:10px 0; }
 .pill-toggle{ font-family:'Inter',sans-serif; font-size:11.5px; font-weight:700; padding:7px 13px; border-radius:20px; border:1.5px solid var(--line); background:#fff; color:var(--ink-soft); cursor:pointer; transition: all .15s ease; }
 .pill-toggle.on{ background:var(--ok); border-color:var(--ok); color:#fff; }
+.pill-toggle.parcial{ background:var(--gold); border-color:var(--gold); color:#fff; }
 .acoes-row{ display:flex; flex-wrap:wrap; align-items:center; gap:16px; border-top:1px solid var(--line); padding-top:9px; margin-top:2px; }
 .acoes-row button{ background:none; border:none; padding:0; font-family:'Inter',sans-serif; font-size:11.5px; font-weight:700; color:var(--gold); cursor:pointer; }
 .acoes-row button.excluir{ color:var(--warn); margin-left:auto; }
@@ -308,14 +310,32 @@ const fmtDateBR = (iso) => { if(!iso) return ''; const [y,m,d]=iso.split('-'); r
 const monthLabel = (iso) => { const [y,m] = iso.split('-'); const meses=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return meses[parseInt(m,10)-1] + '/' + y; };
 const hojeStr = () => new Date().toISOString().slice(0,10);
 /* Decide qual deve ser a data de pagamento de uma reserva, preservando o histórico:
-   - virou "Pago" agora → grava a data de hoje (é o dia real em que o dinheiro entrou)
-   - já estava "Pago" e continua → mantém a data que já tinha (edição não deve reescrever o passado)
-   - não está mais "Pago" → apaga a data (não conta mais como entrada no Caixa) */
-function proximaDataPagamento(pagoNovo, pagoAntigo, dataPagamentoAntiga){
-  if(pagoNovo !== 'Sim') return null;
-  if(pagoAntigo === 'Sim') return dataPagamentoAntiga ?? null;
+   - o valor pago mudou (subiu ou caiu) → grava a data de hoje (é o dia real em que isso aconteceu)
+   - o valor pago é o mesmo de antes → mantém a data que já tinha (edição de outro campo não reescreve o passado)
+   - o valor pago zerou → apaga a data (deixou de ser uma entrada no Caixa) */
+function proximaDataPagamento(valorPagoNovo, valorPagoAntigo, dataPagamentoAntiga){
+  const novo = Number(valorPagoNovo)||0;
+  const antigo = Number(valorPagoAntigo)||0;
+  if(novo<=0) return null;
+  if(Math.abs(novo-antigo)<0.005) return dataPagamentoAntiga ?? null;
   return hojeStr();
 }
+/* Pagamento parcial: em vez de um Sim/Não binário, cada reserva guarda quanto já foi
+   efetivamente pago (valorPago, em R$). O status (Não/Parcial/Sim) é derivado disso.
+   Reservas antigas (de antes dessa mudança) não têm valorPago gravado — nesse caso,
+   assume-se o valor total se já estava marcada como "Pago: Sim", ou zero caso contrário,
+   então nada precisa ser migrado manualmente no banco. */
+function valorPagoDe(r){
+  if(r.valorPago !== undefined && r.valorPago !== null) return Number(r.valorPago);
+  return r.pago==='Sim' ? valorReserva(r) : 0;
+}
+function statusPagamento(valorPago, valorTotal){
+  const vp = Number(valorPago)||0, vt = Number(valorTotal)||0;
+  if(vp<=0) return 'Não';
+  if(vp >= vt-0.005) return 'Sim';
+  return 'Parcial';
+}
+function saldoPendente(r){ return Math.max(0, Math.round((valorReserva(r) - valorPagoDe(r))*100)/100); }
 function eventoKey(data,tipo){ return data+'|'+tipo; }
 function eventosOptions(){
   const hojeStr = new Date().toISOString().slice(0,10);
@@ -361,7 +381,7 @@ function whatsappUrl(contato, mensagem){
 }
 function mensagemConfirmacao(r){
   const m = ministerioAtual;
-  return `Olá ${r.cliente}! ${m.emoji}\n\nSeu pedido no *${m.mensagemNome}* foi *confirmado*!\n\n🍽️ Item: ${r.item}\nQuantidade: ${r.qtd}\n💰 Valor: ${fmtMoney(valorReserva(r))}\n\n📅 Retirada: ${fmtDateBR(r.data)}, no culto das ${r.horario}\n\nAté lá! — ${m.mensagemRodape}`;
+  return `Olá ${r.cliente}! ${m.emoji}\n\nSeu pedido no *${m.mensagemNome}* foi *confirmado*!\n\n🍽️ Item: ${r.item}${r.versao?` (${r.versao})`:''}\nQuantidade: ${r.qtd}\n💰 Valor: ${fmtMoney(valorReserva(r))}\n\n📅 Retirada: ${fmtDateBR(r.data)}, no culto das ${r.horario}\n\nAté lá! — ${m.mensagemRodape}`;
 }
 function whatsappBtn(contato, extraStyle){
   const url = whatsappUrl(contato);
@@ -733,7 +753,8 @@ function renderDashboardGeral(c){
   const totalDespesas = DB.despesas.reduce((s,d)=>s+Number(d.valor),0);
   const lucro = totalVendido-totalDespesas;
   const qtdTotal = DB.reservas.reduce((s,r)=>s+r.qtd,0);
-  const naoPagos = DB.reservas.filter(r=>r.pago==='Não').length;
+  const pendentesPagamento = DB.reservas.filter(r=>statusPagamento(valorPagoDe(r), valorReserva(r))!=='Sim');
+  const saldoPendenteTotal = pendentesPagamento.reduce((s,r)=>s+saldoPendente(r),0);
   const naoEntregues = DB.reservas.filter(r=>r.entregue==='Não').length;
   const resumoCaixa = calcularResumoCaixa();
 
@@ -745,7 +766,8 @@ function renderDashboardGeral(c){
     <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Lucro Total</div><div class="value">${fmtMoney(lucro)}</div></div>
     <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Margem de Lucro</div><div class="value">${fmtPct(margemPct(totalVendido,totalDespesas))}</div></div>
     <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Retorno s/ Investido</div><div class="value">${fmtPct(roiPct(totalVendido,totalDespesas))}</div></div>
-    <div class="kpi ${naoPagos>0?'warn':''}"><div class="label">Pedidos Não Pagos</div><div class="value">${naoPagos}</div></div>
+    <div class="kpi ${pendentesPagamento.length>0?'warn':''}"><div class="label">Pedidos c/ Saldo Pendente</div><div class="value">${pendentesPagamento.length}</div></div>
+    <div class="kpi ${saldoPendenteTotal>0?'warn':''}"><div class="label">Saldo Pendente (R$)</div><div class="value">${fmtMoney(saldoPendenteTotal)}</div></div>
     <div class="kpi ${naoEntregues>0?'warn':''}"><div class="label">Não Entregues</div><div class="value">${naoEntregues}</div></div>
   </div></div>`));
 
@@ -874,7 +896,8 @@ function renderDashboardEvento(c){
   const lucro = totalVendido-totalDespesa;
   const qtdVendidaTotal = resev.reduce((s,r)=>s+r.qtd,0);
   const clientesUnicos = new Set(resev.map(r=>r.cliente.trim().toLowerCase())).size;
-  const naoPagos = resev.filter(r=>r.pago==='Não');
+  const naoPagos = resev.filter(r=>statusPagamento(valorPagoDe(r), valorReserva(r))!=='Sim');
+  const saldoPendenteEvento = naoPagos.reduce((s,r)=>s+saldoPendente(r),0);
   const naoEntregues = resev.filter(r=>r.entregue==='Não');
 
   c.appendChild(el(`<div class="section-title">Resumo do Dia — ${sel.label}</div>`));
@@ -886,7 +909,8 @@ function renderDashboardEvento(c){
     <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Margem de Lucro</div><div class="value">${fmtPct(margemPct(totalVendido,totalDespesa))}</div></div>
     <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Retorno s/ Investido</div><div class="value">${fmtPct(roiPct(totalVendido,totalDespesa))}</div></div>
     <div class="kpi"><div class="label">Clientes Únicos</div><div class="value">${clientesUnicos}</div></div>
-    <div class="kpi ${naoPagos.length?'warn':''}"><div class="label">Não Pagos</div><div class="value">${naoPagos.length}</div></div>
+    <div class="kpi ${naoPagos.length?'warn':''}"><div class="label">Pedidos c/ Saldo Pendente</div><div class="value">${naoPagos.length}</div></div>
+    <div class="kpi ${saldoPendenteEvento>0?'warn':''}"><div class="label">Saldo Pendente (R$)</div><div class="value">${fmtMoney(saldoPendenteEvento)}</div></div>
     <div class="kpi ${naoEntregues.length?'warn':''}"><div class="label">Não Entregues</div><div class="value">${naoEntregues.length}</div></div>
   </div></div>`));
 
@@ -914,32 +938,45 @@ function renderDashboardEvento(c){
     <tbody>${ranking.length? ranking.map(r=>`<tr><td>${escapeHtml(r[0])}</td><td>${r[1].qtd}</td><td>${fmtMoney(r[1].valor)}</td><td>${fmtPct(totalVendido? r[1].valor/totalVendido*100:0)}</td></tr>`).join('') : '<tr><td colspan="4" class="empty-state">Sem pedidos neste evento ainda</td></tr>'}</tbody>
   </table></div></div>`));
 
-  const itensComLimite = DB.cardapio.filter(i=>
-    (i.limite!==null && i.limite!==undefined && i.limite>0) &&
-    (!(i.eventosVinculados||[]).length || i.eventosVinculados.includes(sel.id))
-  );
-  if(itensComLimite.length){
-    const somaLimites = itensComLimite.reduce((s,i)=>s+i.limite,0);
+  const itemVersaoAgg = {};
+  resev.forEach(r=>{ const k=`${r.item}||${r.versao||''}`; itemVersaoAgg[k]=itemVersaoAgg[k]||{qtd:0}; itemVersaoAgg[k].qtd+=r.qtd; });
+  const linhasLimiteData = [];
+  DB.cardapio.forEach(i=>{
+    const vinculadoAoEvento = !(i.eventosVinculados||[]).length || i.eventosVinculados.includes(sel.id);
+    if(!vinculadoAoEvento) return;
+    if((i.versoes||[]).length){
+      // Itens com versões têm limite de produção separado por versão (ex: 30 Grandes + 20 Pequenas).
+      i.versoes.forEach(v=>{
+        if(v.limite===null || v.limite===undefined || v.limite<=0) return;
+        const vendido = (itemVersaoAgg[`${i.item}||${v.nome}`]?.qtd)||0;
+        linhasLimiteData.push({ label: `${i.item} — ${v.nome}`, limite: v.limite, vendido });
+      });
+    } else if(i.limite!==null && i.limite!==undefined && i.limite>0){
+      const vendido = (itemAgg[i.item]?.qtd)||0;
+      linhasLimiteData.push({ label: i.item, limite: i.limite, vendido });
+    }
+  });
+  if(linhasLimiteData.length){
+    const somaLimites = linhasLimiteData.reduce((s,x)=>s+x.limite,0);
     const custoPorUnidade = somaLimites>0 ? totalDespesa/somaLimites : 0;
     let prejuizoTotal = 0;
-    const linhas = itensComLimite.map(i=>{
-      const vendido = (itemAgg[i.item]?.qtd)||0;
-      const sobra = Math.max(0, i.limite - vendido);
-      const pct = Math.min(100, i.limite? (vendido/i.limite*100) : 0);
+    const linhas = linhasLimiteData.map(x=>{
+      const sobra = Math.max(0, x.limite - x.vendido);
+      const pct = Math.min(100, x.limite? (x.vendido/x.limite*100) : 0);
       const prejuizo = sobra * custoPorUnidade;
       prejuizoTotal += prejuizo;
-      const excedeu = vendido > i.limite;
+      const excedeu = x.vendido > x.limite;
       return `<tr class="${excedeu?'pend':''}">
-        <td>${escapeHtml(i.item)}</td>
-        <td>${i.limite}</td>
-        <td>${vendido}</td>
-        <td>${excedeu?`<span class="badge nao">excedeu em ${vendido-i.limite}</span>`:sobra}</td>
+        <td>${escapeHtml(x.label)}</td>
+        <td>${x.limite}</td>
+        <td>${x.vendido}</td>
+        <td>${excedeu?`<span class="badge nao">excedeu em ${x.vendido-x.limite}</span>`:sobra}</td>
         <td style="min-width:110px;"><div style="background:#EDE3CB;border-radius:4px;overflow:hidden;height:9px;width:100%;"><div style="background:${excedeu?'var(--warn)':'var(--gold)'};height:100%;width:${pct}%;"></div></div><span class="small-note" style="margin:2px 0 0;">${fmtPct(pct)}</span></td>
         <td>${sobra>0? fmtMoney(prejuizo) : '—'}</td>
       </tr>`;
     }).join('');
     c.appendChild(el(`<div class="section-title">Limites de Produção</div>`));
-    c.appendChild(el(`<div class="small-note" style="margin-bottom:10px;">"Prejuízo estimado" = custo médio por unidade (despesa do evento dividida pela capacidade total) × unidades que sobraram. É uma estimativa, já que o sistema não rastreia custo por item individualmente.</div>`));
+    c.appendChild(el(`<div class="small-note" style="margin-bottom:10px;">"Prejuízo estimado" = custo médio por unidade (despesa do evento dividida pela capacidade total) × unidades que sobraram. É uma estimativa, já que o sistema não rastreia custo por item individualmente. Itens com versões (ex: Grande/Pequena) mostram uma linha por versão, já que cada uma tem seu próprio limite.</div>`));
     c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
       <thead><tr><th>Item</th><th>Produzido</th><th>Vendido</th><th>Sobra</th><th>% Vendido</th><th>Prejuízo Estimado</th></tr></thead>
       <tbody>${linhas}</tbody>
@@ -950,8 +987,8 @@ function renderDashboardEvento(c){
   c.appendChild(el(`<div class="section-title">Pendências — Quem Falta Pagar / Retirar</div>`));
   const two3 = el(`<div class="two-col"></div>`);
   two3.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
-    <thead><tr><th>Falta Pagar</th><th>Item</th><th>Valor</th></tr></thead>
-    <tbody>${naoPagos.length? naoPagos.map(r=>`<tr><td>${escapeHtml(r.cliente)}</td><td>${escapeHtml(r.item)}</td><td>${fmtMoney(valorReserva(r))}</td></tr>`).join('') : '<tr><td colspan="3" class="empty-state">Todo mundo pagou 🎉</td></tr>'}</tbody>
+    <thead><tr><th>Falta Pagar</th><th>Item</th><th>Status</th><th>Saldo Pendente</th></tr></thead>
+    <tbody>${naoPagos.length? naoPagos.map(r=>`<tr><td>${escapeHtml(r.cliente)}</td><td>${escapeHtml(r.item)}</td><td><span class="badge ${r.pago==='Parcial'?'parcial':'nao'}">${r.pago==='Parcial'?'Parcial':'Não pago'}</span></td><td>${fmtMoney(saldoPendente(r))}</td></tr>`).join('') : '<tr><td colspan="4" class="empty-state">Todo mundo pagou 🎉</td></tr>'}</tbody>
   </table></div></div>`));
   two3.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
     <thead><tr><th>Falta Retirar</th><th>Item</th><th>Horário</th></tr></thead>
@@ -1164,7 +1201,7 @@ function descreverAjuste(tipo, valorDigitado, ajusteAplicado){
 
 function renderCardapio(c){
   const podeMexer = podeEditar('cardapio');
-  const cardFormState = { faixas: [], opcoes: [], eventosVinculados: [], editingId: null };
+  const cardFormState = { faixas: [], opcoes: [], eventosVinculados: [], versoes: [], editingId: null };
 
   if(!podeMexer){
     c.appendChild(el(`<div class="small-note" style="margin-bottom:16px;">Você tem acesso apenas para consulta nesta aba. Fale com um administrador se precisar cadastrar ou alterar itens do cardápio.</div>`));
@@ -1174,16 +1211,27 @@ function renderCardapio(c){
     <div class="form-grid">
       <div><label>Item</label><input type="text" id="f_item" placeholder="Ex: Pastel de Carne"></div>
       <div><label>Categoria</label><input type="text" id="f_cat" placeholder="Ex: Salgado"></div>
-      <div><label>Preço 1 unidade (R$)</label><input type="number" step="0.01" id="f_preco"></div>
+      <div id="f_precoWrap"><label>Preço 1 unidade (R$)</label><input type="number" step="0.01" id="f_preco"></div>
       <div><label>Ativo</label><select id="f_ativo"><option value="true">Sim</option><option value="false">Não</option></select></div>
-      <div><label>Limite por evento (opcional)</label><input type="number" min="0" id="f_limite" placeholder="Ex: 100"></div>
+      <div id="f_limiteWrap"><label>Limite por evento (opcional)</label><input type="number" min="0" id="f_limite" placeholder="Ex: 100"></div>
     </div>
-    <div class="small-note" style="margin-top:-10px; margin-bottom:6px;">Se preenchido, o sistema avisa quando a quantidade reservada desse item, num mesmo evento, se aproxima ou ultrapassa esse número. Deixe em branco para não limitar.</div>
+    <div class="small-note" id="f_limiteNota" style="margin-top:-10px; margin-bottom:6px;">Se preenchido, o sistema avisa quando a quantidade reservada desse item, num mesmo evento, se aproxima ou ultrapassa esse número. Deixe em branco para não limitar.</div>
 
     <label style="margin-top:4px;">Pacotes promocionais (opcional)</label>
-    <div class="small-note" style="margin-top:-4px; margin-bottom:6px;">Ex: "2 unidades por R$36" — a partir da 3ª unidade avulsa, volta a cobrar o preço normal de 1 unidade.</div>
+    <div class="small-note" style="margin-top:-4px; margin-bottom:6px;">Ex: "2 unidades por R$36" — a partir da 3ª unidade avulsa, volta a cobrar o preço normal de 1 unidade. Não se aplica a itens com versões (cada versão já tem preço fechado).</div>
     <div id="faixasList" style="margin-bottom:8px;"></div>
     <button type="button" class="btn secondary small" id="btnAddFaixa">+ Adicionar faixa de quantidade</button>
+
+    <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--line);">
+      <label style="display:flex; align-items:center; gap:8px; text-transform:none; font-size:13px;">
+        <input type="checkbox" id="f_temVersoes" style="width:auto;"> Este item tem versões com preços diferentes (ex: tamanhos, sabores)?
+      </label>
+      <div class="small-note" style="margin-top:4px;">Ex: "Marmita Grande — R$12" e "Marmita Pequena — R$10", sem precisar cadastrar dois itens separados. Cada versão tem seu próprio preço e limite de produção.</div>
+      <div id="versoesWrap" style="display:none; margin-top:10px;">
+        <div id="versoesList"></div>
+        <button type="button" class="btn secondary small" id="btnAddVersao">+ Adicionar versão</button>
+      </div>
+    </div>
 
     <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--line);">
       <label style="display:flex; align-items:center; gap:8px; text-transform:none; font-size:13px;">
@@ -1236,6 +1284,44 @@ function renderCardapio(c){
 
   form.appendChild(el(`<div class="small-note" style="margin-top:-6px; margin-bottom:12px;">Deixe "válido até" em branco pra pacote sem prazo (vale sempre).</div>`));
 
+  const versoesListEl = form.querySelector('#versoesList');
+  const versoesWrap = form.querySelector('#versoesWrap');
+  const temVersoesChk = form.querySelector('#f_temVersoes');
+  const precoWrap = form.querySelector('#f_precoWrap');
+  const limiteWrap = form.querySelector('#f_limiteWrap');
+  const limiteNota = form.querySelector('#f_limiteNota');
+
+  function renderVersoesList(){
+    versoesListEl.innerHTML = cardFormState.versoes.map((v,i)=>`
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
+        <input type="text" value="${escapeHtml(v.nome)}" data-versao-nome="${i}" style="width:160px;" placeholder="Ex: Grande">
+        <span class="small-note" style="margin:0;">preço</span>
+        <input type="number" step="0.01" min="0" value="${v.preco}" data-versao-preco="${i}" style="width:100px;" placeholder="R$">
+        <span class="small-note" style="margin:0;">limite/evento (opcional)</span>
+        <input type="number" min="0" value="${v.limite===null||v.limite===undefined?'':v.limite}" data-versao-limite="${i}" style="width:110px;" placeholder="Ex: 30">
+        <button type="button" class="btn danger small" data-versao-del="${i}">Remover</button>
+      </div>`).join('') || `<div class="small-note">Nenhuma versão adicionada ainda — adicione pelo menos uma.</div>`;
+  }
+  versoesListEl.addEventListener('input', e=>{
+    if(e.target.dataset.versaoNome!==undefined){ cardFormState.versoes[e.target.dataset.versaoNome].nome = e.target.value; }
+    if(e.target.dataset.versaoPreco!==undefined){ cardFormState.versoes[e.target.dataset.versaoPreco].preco = parseFloat(e.target.value)||0; }
+    if(e.target.dataset.versaoLimite!==undefined){ const raw=e.target.value.trim(); cardFormState.versoes[e.target.dataset.versaoLimite].limite = raw===''?null:parseInt(raw,10); }
+  });
+  versoesListEl.addEventListener('click', e=>{
+    if(e.target.dataset.versaoDel!==undefined){ cardFormState.versoes.splice(Number(e.target.dataset.versaoDel),1); renderVersoesList(); }
+  });
+  form.querySelector('#btnAddVersao').addEventListener('click', ()=>{
+    cardFormState.versoes.push({nome:'', preco:0, limite:null}); renderVersoesList();
+  });
+  function atualizarVisibilidadeVersoes(){
+    versoesWrap.style.display = temVersoesChk.checked ? 'block' : 'none';
+    if(temVersoesChk.checked && cardFormState.versoes.length===0){ cardFormState.versoes.push({nome:'', preco:0, limite:null}); renderVersoesList(); }
+    // Com versões, o preço e o limite "base" do item deixam de fazer sentido — cada versão tem os seus.
+    precoWrap.style.display = temVersoesChk.checked ? 'none' : '';
+    limiteWrap.style.display = temVersoesChk.checked ? 'none' : '';
+    limiteNota.style.display = temVersoesChk.checked ? 'none' : '';
+  }
+  temVersoesChk.addEventListener('change', atualizarVisibilidadeVersoes);
 
   function renderOpcoesList(){
     opcoesListEl.innerHTML = cardFormState.opcoes.map((g,i)=>`
@@ -1288,15 +1374,16 @@ function renderCardapio(c){
     opcoesWrap.style.display = temOpcoesChk.checked ? 'block' : 'none';
     if(temOpcoesChk.checked && cardFormState.opcoes.length===0){ cardFormState.opcoes.push({nome:'', tipo:'unica', alternativasRaw:''}); renderOpcoesList(); }
   });
-  renderFaixasList(); renderOpcoesList();
+  renderFaixasList(); renderVersoesList(); atualizarVisibilidadeVersoes(); renderOpcoesList();
 
   function limparForm(){
     form.querySelector('#f_item').value=''; form.querySelector('#f_cat').value='';
     form.querySelector('#f_preco').value=''; form.querySelector('#f_ativo').value='true';
     form.querySelector('#f_limite').value='';
     temOpcoesChk.checked = false; opcoesWrap.style.display='none';
-    cardFormState.faixas = []; cardFormState.opcoes = []; cardFormState.eventosVinculados = []; cardFormState.editingId = null;
-    renderFaixasList(); renderOpcoesList(); renderEventosVinculadosList();
+    temVersoesChk.checked = false;
+    cardFormState.faixas = []; cardFormState.opcoes = []; cardFormState.eventosVinculados = []; cardFormState.versoes = []; cardFormState.editingId = null;
+    renderFaixasList(); renderOpcoesList(); renderEventosVinculadosList(); renderVersoesList(); atualizarVisibilidadeVersoes();
     form.querySelector('#btnAdd').textContent = '+ Adicionar Item';
     form.querySelector('#btnCancelEdit').style.display = 'none';
   }
@@ -1306,19 +1393,25 @@ function renderCardapio(c){
   form.querySelector('#btnAdd').addEventListener('click', async ()=>{
     const item = form.querySelector('#f_item').value.trim();
     const categoria = form.querySelector('#f_cat').value.trim();
-    const preco = parseFloat(form.querySelector('#f_preco').value);
+    const temVersoes = temVersoesChk.checked;
+    const versoes = temVersoes ? cardFormState.versoes
+      .filter(v=>v.nome.trim() && v.preco>0)
+      .map(v=>({nome:v.nome.trim(), preco:Number(v.preco), limite:(v.limite===null||v.limite===undefined||isNaN(v.limite))?null:Number(v.limite)})) : [];
+    if(!item){ alert('Preencha o nome do item.'); return; }
+    if(temVersoes && versoes.length===0){ alert('Adicione pelo menos uma versão com nome e preço, ou desmarque a opção de versões.'); return; }
+    const preco = temVersoes ? versoes[0].preco : parseFloat(form.querySelector('#f_preco').value);
+    if(!temVersoes && isNaN(preco)){ alert('Preencha nome do item e preço.'); return; }
     const ativo = form.querySelector('#f_ativo').value==='true';
     const limiteRaw = form.querySelector('#f_limite').value;
-    const limite = limiteRaw.trim()==='' ? null : parseInt(limiteRaw,10);
-    if(!item || isNaN(preco)){ alert('Preencha nome do item e preço.'); return; }
-    const faixasPreco = cardFormState.faixas
+    const limite = temVersoes ? null : (limiteRaw.trim()==='' ? null : parseInt(limiteRaw,10));
+    const faixasPreco = temVersoes ? [] : cardFormState.faixas
       .filter(f=>f.qtdBloco>=2 && f.precoBloco>0)
       .map(f=>({qtdBloco:Number(f.qtdBloco), precoBloco:Number(f.precoBloco), validoAte: f.validoAte || null}));
     const temOpcoes = temOpcoesChk.checked;
     const opcoes = temOpcoes ? cardFormState.opcoes
       .filter(g=>g.nome.trim() && g.alternativasRaw.trim())
       .map(g=>({nome:g.nome.trim(), tipo:g.tipo, alternativas:g.alternativasRaw.split(',').map(s=>s.trim()).filter(Boolean)})) : [];
-    const docObj = { item, categoria, preco, ativo, limite, faixasPreco, temOpcoes, opcoes, eventosVinculados: [...cardFormState.eventosVinculados] };
+    const docObj = { item, categoria, preco, ativo, limite, faixasPreco, temOpcoes, opcoes, versoes, eventosVinculados: [...cardFormState.eventosVinculados] };
     try{
       if(cardFormState.editingId){
         const itemAntigo = DB.cardapio.find(i=>i.id===cardFormState.editingId);
@@ -1355,10 +1448,15 @@ function renderCardapio(c){
       }).join(' · ') : '—';
       const opcoesTxt = i.temOpcoes && (i.opcoes||[]).length ? (i.opcoes||[]).map(o=>o.nome).join(', ') : '—';
       const eventosTxt = (i.eventosVinculados||[]).length ? `${i.eventosVinculados.length} evento(s) específico(s)` : 'Todos os eventos';
+      const temVersoes = (i.versoes||[]).length>0;
+      const precoTxt = temVersoes ? i.versoes.map(v=>`${escapeHtml(v.nome)}: ${fmtMoney(v.preco)}`).join(' · ') : fmtMoney(i.preco);
+      const limiteTxt = temVersoes
+        ? i.versoes.map(v=>`${escapeHtml(v.nome)}: ${(v.limite===null||v.limite===undefined)?'—':v.limite}`).join(' · ')
+        : ((i.limite===null||i.limite===undefined)?'—':i.limite);
       return `<tr data-id="${i.id}">
-      <td>${escapeHtml(i.item)}</td><td>${escapeHtml(i.categoria)}</td><td>${fmtMoney(i.preco)}</td>
-      <td>${(i.limite===null||i.limite===undefined)?'—':i.limite}</td>
-      <td style="font-size:12px;">${faixasTxt}</td>
+      <td>${escapeHtml(i.item)}</td><td>${escapeHtml(i.categoria)}</td><td style="font-size:12px;">${precoTxt}</td>
+      <td style="font-size:12px;">${limiteTxt}</td>
+      <td style="font-size:12px;">${temVersoes?'<span class="small-note" style="margin:0;">Não se aplica (tem versões)</span>':faixasTxt}</td>
       <td style="font-size:12px;">${escapeHtml(opcoesTxt)}</td>
       <td style="font-size:12px;">${escapeHtml(eventosTxt)}</td>
       <td><span class="badge ${i.ativo?'sim':'nao'}">${i.ativo?'Sim':'Não'}</span></td>
@@ -1381,10 +1479,12 @@ function renderCardapio(c){
       cardFormState.faixas = normalizarPacotes(i.faixasPreco);
       cardFormState.opcoes = (i.opcoes||[]).map(o=>({nome:o.nome, tipo:o.tipo, alternativasRaw:(o.alternativas||[]).join(', ')}));
       cardFormState.eventosVinculados = [...(i.eventosVinculados||[])];
+      cardFormState.versoes = (i.versoes||[]).map(v=>({nome:v.nome, preco:v.preco, limite:(v.limite===null||v.limite===undefined)?null:v.limite}));
       cardFormState.editingId = i.id;
       temOpcoesChk.checked = !!i.temOpcoes;
       opcoesWrap.style.display = i.temOpcoes ? 'block' : 'none';
-      renderFaixasList(); renderOpcoesList(); renderEventosVinculadosList();
+      temVersoesChk.checked = (i.versoes||[]).length>0;
+      renderFaixasList(); renderOpcoesList(); renderEventosVinculadosList(); renderVersoesList(); atualizarVisibilidadeVersoes();
       form.querySelector('#btnAdd').textContent = 'Salvar Alterações';
       form.querySelector('#btnCancelEdit').style.display = 'inline-block';
       form.scrollIntoView({behavior:'smooth', block:'start'});
@@ -1424,6 +1524,7 @@ function renderReservas(c){
       <div style="border-top:1px solid var(--line); padding-top:14px;">
         <div class="form-grid">
           <div><label>Item</label><select id="f_item"></select></div>
+          <div id="f_versaoWrap" style="display:none;"><label>Versão</label><select id="f_versao"></select></div>
           <div><label>Horário</label><select id="f_horario"></select></div>
           <div><label>Quantidade</label><input type="number" min="1" value="1" id="f_qtd"></div>
           <div><label>Tipo de Ajuste</label><select id="f_ajusteTipo">
@@ -1432,9 +1533,13 @@ function renderReservas(c){
             <option value="valorUnidade">R$ fixo — por unidade</option>
             <option value="percentual">% sobre o total</option>
           </select></div>
-          <div><label>Valor do Ajuste</label><input type="number" step="0.01" value="0" id="f_ajusteValor" placeholder="Ex: -2 ou 5"></div>
+          <div><label>Desconto ou Acréscimo?</label><select id="f_ajusteDirecao">
+            <option value="desconto">➖ Desconto</option>
+            <option value="acrescimo">➕ Acréscimo</option>
+          </select></div>
+          <div><label>Valor do Ajuste</label><input type="number" step="0.01" min="0" value="0" id="f_ajusteValor" placeholder="Ex: 2"></div>
         </div>
-        <div class="small-note" style="margin-top:-10px; margin-bottom:12px;">No ajuste, use valor <strong>negativo</strong> pra desconto (ex: -2) e <strong>positivo</strong> pra acréscimo (ex: 5). Deixe "Sem ajuste" se o preço do cardápio/pacote já está correto — use isso pra casos pontuais, como um ingrediente extra ou uma queima de estoque.</div>
+        <div class="small-note" style="margin-top:-10px; margin-bottom:12px;">Escolha se é desconto ou acréscimo e digite o valor sempre <strong>positivo</strong> (ex: 2) — o sistema aplica o sinal certo sozinho, então funciona igual no computador, no celular ou no tablet, sem precisar digitar "-" ou "+". Deixe "Sem ajuste" se o preço do cardápio/pacote já está correto — use isso pra casos pontuais, como um ingrediente extra ou uma queima de estoque.</div>
         <div style="margin-bottom:12px;"><label>Motivo do ajuste (opcional)</label><input type="text" id="f_ajusteMotivo" placeholder="Ex: carne extra no hambúrguer, últimas unidades..."></div>
         <div class="small-note" id="precoPreview" style="margin-bottom:4px;"></div>
         <div class="small-note" id="limitePreview" style="margin-bottom:14px;"></div>
@@ -1448,10 +1553,11 @@ function renderReservas(c){
       <div style="border-top:1px solid var(--line); padding-top:14px; margin-top:16px;">
         <div class="form-grid">
           <div><label>Forma de Pagamento</label><select id="f_pagto"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
-          <div><label>Pago?</label><select id="f_pago"><option>Não</option><option>Sim</option></select></div>
+          <div><label>Pago?</label><select id="f_pago"><option>Não</option><option>Parcial</option><option>Sim</option></select></div>
+          <div id="f_valorPagoWrap" style="display:none;"><label>Valor já pago (R$)</label><input type="number" step="0.01" min="0" id="f_valorPago" placeholder="Ex: 20"></div>
           <div><label>Entregue?</label><select id="f_entregue"><option>Não</option><option>Sim</option></select></div>
         </div>
-        <div class="small-note" id="pagtoModoNota" style="margin-top:-10px; margin-bottom:12px;">Aplicado a todos os itens deste pedido ao finalizar. Depois de lançado, cada item vira um cartão próprio em "Pedidos Lançados" e pode ser marcado individualmente.</div>
+        <div class="small-note" id="pagtoModoNota" style="margin-top:-10px; margin-bottom:12px;">Aplicado a todos os itens deste pedido ao finalizar. Depois de lançado, cada item vira um cartão próprio em "Pedidos Lançados" e pode ser marcado (ou ter o pagamento parcial ajustado) individualmente. Pagamento parcial na hora de finalizar só funciona com 1 item no pedido — com mais de um, finalize como "Não" ou "Sim" e ajuste o valor pago depois, item por item.</div>
         <button class="btn" id="btnFinalizar" disabled>Finalizar Pedido</button>
         <button class="btn secondary" id="btnCancelEditReserva" style="display:none;">Cancelar edição</button>
       </div>
@@ -1466,10 +1572,17 @@ function renderReservas(c){
     const carrinhoModoNota = form.querySelector('#carrinhoModoNota');
     const horSel = form.querySelector('#f_horario');
     const itemSel = form.querySelector('#f_item');
+    const versaoWrap = form.querySelector('#f_versaoWrap');
+    const versaoSel = form.querySelector('#f_versao');
     const qtdInput = form.querySelector('#f_qtd');
     const ajusteTipoSel = form.querySelector('#f_ajusteTipo');
+    const ajusteDirecaoSel = form.querySelector('#f_ajusteDirecao');
     const ajusteValorInput = form.querySelector('#f_ajusteValor');
     const ajusteMotivoInput = form.querySelector('#f_ajusteMotivo');
+    function ajusteValorComSinal(){
+      const magnitude = Math.abs(parseFloat(ajusteValorInput.value)) || 0;
+      return ajusteDirecaoSel.value==='desconto' ? -magnitude : magnitude;
+    }
     function tentarAutoPreencherTelefone(){
       const cl = DB.clientes.find(x=>normalizarNome(x.nome)===normalizarNome(clienteInput.value));
       if(cl && cl.contato){ telefoneInput.value = cl.contato; }
@@ -1478,6 +1591,13 @@ function renderReservas(c){
     clienteInput.addEventListener('change', tentarAutoPreencherTelefone);
     const pagtoSel = form.querySelector('#f_pagto');
     const pagoSel = form.querySelector('#f_pago');
+    const valorPagoWrap = form.querySelector('#f_valorPagoWrap');
+    const valorPagoInput = form.querySelector('#f_valorPago');
+    function atualizarVisibilidadePago(){
+      valorPagoWrap.style.display = pagoSel.value==='Parcial' ? 'block' : 'none';
+    }
+    pagoSel.addEventListener('change', atualizarVisibilidadePago);
+    atualizarVisibilidadePago();
     const entregueSel = form.querySelector('#f_entregue');
     const obsInput = form.querySelector('#f_obs');
     const precoPreview = form.querySelector('#precoPreview');
@@ -1505,21 +1625,44 @@ function renderReservas(c){
         carrinho = [];
       }
       evSelValorAnterior = evSel.value;
-      refreshHorarios(); refreshItemOptions(); refreshOpcoesItem(); refreshPrecoPreview(); renderCarrinho();
+      refreshHorarios(); refreshItemOptions(); refreshVersaoOptions(); refreshOpcoesItem(); refreshPrecoPreview(); renderCarrinho();
     });
     refreshHorarios(); refreshItemOptions();
 
     function itemAtual(){ return DB.cardapio.find(i=>i.id===itemSel.value); }
 
-    function qtdItemNoCarrinho(nomeItem){
-      return carrinho.reduce((s,l)=> l.item===nomeItem ? s+l.qtd : s, 0);
+    /* Versões do mesmo item (ex: Marmita Grande R$12 / Pequena R$10) — o item base guarda uma lista
+       de versões, cada uma com seu próprio preço e limite de produção. Quando o item tem versões,
+       o preço vem sempre da versão escolhida, e os pacotes promocionais do item (se houver) não se
+       aplicam — cada versão já tem preço fechado. */
+    function refreshVersaoOptions(){
+      const item = itemAtual();
+      const temVersoes = item && (item.versoes||[]).length>0;
+      versaoWrap.style.display = temVersoes ? 'block' : 'none';
+      versaoSel.innerHTML = temVersoes ? item.versoes.map((v,i)=>`<option value="${i}">${escapeHtml(v.nome)} — ${fmtMoney(v.preco)}</option>`).join('') : '';
+    }
+    function versaoAtual(){
+      const item = itemAtual();
+      if(!item || !(item.versoes||[]).length) return null;
+      const idx = parseInt(versaoSel.value,10);
+      return item.versoes[idx] || item.versoes[0];
+    }
+    function itemEfetivo(item, versao){
+      return versao ? { ...item, preco: versao.preco, faixasPreco: [] } : item;
+    }
+    function limiteEfetivo(item, versao){
+      return versao ? ((versao.limite===null||versao.limite===undefined)?null:versao.limite) : item.limite;
     }
 
-    function jaReservadoNoEvento(item){
+    function qtdItemNoCarrinho(nomeItem, versaoNome){
+      return carrinho.reduce((s,l)=> (l.item===nomeItem && (l.versao||null)===(versaoNome||null)) ? s+l.qtd : s, 0);
+    }
+
+    function jaReservadoNoEvento(item, versaoNome){
       const sel = opts.find(o=>o.value===evSel.value);
       if(!sel || !item) return 0;
-      const salvo = DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo && r.item===item.item && r.id!==editingReservaId).reduce((s,r)=>s+r.qtd,0);
-      const noCarrinho = editingReservaId ? 0 : qtdItemNoCarrinho(item.item);
+      const salvo = DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo && r.item===item.item && (r.versao||null)===(versaoNome||null) && r.id!==editingReservaId).reduce((s,r)=>s+r.qtd,0);
+      const noCarrinho = editingReservaId ? 0 : qtdItemNoCarrinho(item.item, versaoNome);
       return salvo + noCarrinho;
     }
 
@@ -1548,34 +1691,41 @@ function renderReservas(c){
       const item = itemAtual();
       const qtd = parseInt(qtdInput.value,10) || 0;
       if(!item){ precoPreview.innerHTML=''; limitePreview.innerHTML=''; return; }
+      const versao = versaoAtual();
+      const itemCalc = itemEfetivo(item, versao);
       const selAtual = opts.find(o=>o.value===evSel.value);
-      const { total: totalBase, texto } = calcularValorTotalDetalhado(item, qtd, selAtual?selAtual.data:null);
-      const ajusteAplicado = calcularAjusteValor(ajusteTipoSel.value, ajusteValorInput.value, qtd, totalBase);
+      const { total: totalBase, texto } = calcularValorTotalDetalhado(itemCalc, qtd, selAtual?selAtual.data:null);
+      const ajusteAplicado = calcularAjusteValor(ajusteTipoSel.value, ajusteValorComSinal(), qtd, totalBase);
       const totalFinal = Math.round((totalBase + ajusteAplicado)*100)/100;
-      const ajusteTxt = ajusteAplicado ? `<br>${descreverAjuste(ajusteTipoSel.value, ajusteValorInput.value, ajusteAplicado)} → <strong>total final: ${fmtMoney(totalFinal)}</strong>` : '';
+      const ajusteTxt = ajusteAplicado ? `<br>${descreverAjuste(ajusteTipoSel.value, ajusteValorComSinal(), ajusteAplicado)} → <strong>total final: ${fmtMoney(totalFinal)}</strong>` : '';
       precoPreview.innerHTML = qtd>0 ? `<strong>Total deste item: ${fmtMoney(totalBase)}</strong> <span style="color:var(--ink-soft);">(${fmtMoney(qtd?totalBase/qtd:0)} em média por unidade)</span>${texto?`<br>cálculo: ${escapeHtml(texto)}`:''}${ajusteTxt}` : '';
-      if(item.limite!==null && item.limite!==undefined && item.limite>0){
-        const jaReservado = jaReservadoNoEvento(item);
+      const limite = limiteEfetivo(item, versao);
+      if(limite!==null && limite!==undefined && limite>0){
+        const versaoNome = versao ? versao.nome : null;
+        const jaReservado = jaReservadoNoEvento(item, versaoNome);
         const depois = jaReservado + qtd;
-        const restante = item.limite - depois;
-        const excede = depois > item.limite;
-        const contexto = (!editingReservaId && qtdItemNoCarrinho(item.item)>0) ? ' (já contando outro(s) item(ns) deste mesmo pedido)' : '';
-        limitePreview.innerHTML = `<span style="color:${excede?'var(--warn)':'var(--ink-soft)'}">Já reservado${contexto}: ${jaReservado} de ${item.limite}. Adicionando este: <strong>${depois} de ${item.limite}</strong> (restam ${Math.max(0,restante)})${excede?' — ⚠️ ultrapassa o limite, não vai deixar salvar!':''}</span>`;
+        const restante = limite - depois;
+        const excede = depois > limite;
+        const contexto = (!editingReservaId && qtdItemNoCarrinho(item.item, versaoNome)>0) ? ' (já contando outro(s) item(ns) deste mesmo pedido)' : '';
+        limitePreview.innerHTML = `<span style="color:${excede?'var(--warn)':'var(--ink-soft)'}">Já reservado${contexto}: ${jaReservado} de ${limite}. Adicionando este: <strong>${depois} de ${limite}</strong> (restam ${Math.max(0,restante)})${excede?' — ⚠️ ultrapassa o limite, não vai deixar salvar!':''}</span>`;
       } else {
         limitePreview.innerHTML = '';
       }
     }
 
-    itemSel.addEventListener('change', ()=>{ refreshOpcoesItem(); refreshPrecoPreview(); });
+    itemSel.addEventListener('change', ()=>{ refreshVersaoOptions(); refreshOpcoesItem(); refreshPrecoPreview(); });
+    versaoSel.addEventListener('change', refreshPrecoPreview);
     qtdInput.addEventListener('input', refreshPrecoPreview);
     ajusteTipoSel.addEventListener('change', refreshPrecoPreview);
+    ajusteDirecaoSel.addEventListener('change', refreshPrecoPreview);
     ajusteValorInput.addEventListener('input', refreshPrecoPreview);
 
     function limparCamposItem(){
       itemSel.selectedIndex = 0;
       qtdInput.value = '1';
-      ajusteTipoSel.value = 'nenhum'; ajusteValorInput.value = '0'; ajusteMotivoInput.value = '';
+      ajusteTipoSel.value = 'nenhum'; ajusteDirecaoSel.value = 'desconto'; ajusteValorInput.value = '0'; ajusteMotivoInput.value = '';
       obsInput.value = '';
+      refreshVersaoOptions();
       refreshOpcoesItem();
       refreshPrecoPreview();
     }
@@ -1607,7 +1757,7 @@ function renderReservas(c){
         const linhasHtml = carrinho.map((l,i)=>`
           <div class="frame" style="padding:10px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap;">
             <div>
-              <strong>${escapeHtml(l.item)}</strong> × ${l.qtd} <span class="small-note" style="margin:0;">· 🕒 ${escapeHtml(l.horario)}</span>
+              <strong>${escapeHtml(l.item)}${l.versao?` — ${escapeHtml(l.versao)}`:''}</strong> × ${l.qtd} <span class="small-note" style="margin:0;">· 🕒 ${escapeHtml(l.horario)}</span>
               ${l.opcoesTexto?`<div class="small-note" style="margin:2px 0 0;">${escapeHtml(l.opcoesTexto)}</div>`:''}
               ${l.ajusteAplicado?`<div class="small-note" style="margin:2px 0 0;">${escapeHtml(descreverAjuste(l.ajusteTipo,l.ajusteValor,l.ajusteAplicado))}${l.ajusteMotivo?` — ${escapeHtml(l.ajusteMotivo)}`:''}</div>`:''}
               ${l.observacao?`<div class="small-note" style="margin:2px 0 0; color:var(--warn);">⚠️ ${escapeHtml(l.observacao)}</div>`:''}
@@ -1638,7 +1788,7 @@ function renderReservas(c){
       clienteInput.value = ''; telefoneInput.value = '';
       carrinho = [];
       limparCamposItem();
-      pagtoSel.value='Dinheiro'; pagoSel.value='Não'; entregueSel.value='Não';
+      pagtoSel.value='Dinheiro'; pagoSel.value='Não'; valorPagoInput.value='0'; atualizarVisibilidadePago(); entregueSel.value='Não';
       editingReservaId = null;
       formTitle.textContent = 'Nova Reserva / Pedido';
       form.querySelector('#lancadoPorNote').style.display = '';
@@ -1655,12 +1805,21 @@ function renderReservas(c){
       telefoneInput.value = contatoDoCliente(r.cliente) || '';
       const itemMatch = DB.cardapio.find(i=>i.item===r.item);
       if(itemMatch) itemSel.value = itemMatch.id;
+      refreshVersaoOptions();
+      if(itemMatch && r.versao && (itemMatch.versoes||[]).length){
+        const idxVersao = itemMatch.versoes.findIndex(v=>v.nome===r.versao);
+        if(idxVersao>=0) versaoSel.value = String(idxVersao);
+      }
       qtdInput.value = r.qtd;
       ajusteTipoSel.value = r.ajusteTipo || 'nenhum';
-      ajusteValorInput.value = (r.ajusteValor!==undefined && r.ajusteValor!==null) ? r.ajusteValor : 0;
+      const ajusteValorExistente = (r.ajusteValor!==undefined && r.ajusteValor!==null) ? Number(r.ajusteValor) : 0;
+      ajusteDirecaoSel.value = ajusteValorExistente < 0 ? 'desconto' : 'acrescimo';
+      ajusteValorInput.value = Math.abs(ajusteValorExistente);
       ajusteMotivoInput.value = r.ajusteMotivo || '';
       pagtoSel.value = r.formaPagamento || 'Dinheiro';
-      pagoSel.value = r.pago || 'Não';
+      pagoSel.value = statusPagamento(valorPagoDe(r), valorReserva(r));
+      valorPagoInput.value = valorPagoDe(r);
+      atualizarVisibilidadePago();
       entregueSel.value = r.entregue || 'Não';
       obsInput.value = r.observacao || '';
       refreshOpcoesItem(r.opcoesSelecionadas); refreshPrecoPreview();
@@ -1674,13 +1833,16 @@ function renderReservas(c){
       const itemObj = itemAtual();
       const qtd = parseInt(qtdInput.value,10);
       if(!itemObj || !qtd || qtd<1){ alert('Selecione um item e uma quantidade válida.'); return; }
+      const versao = versaoAtual();
+      const versaoNome = versao ? versao.nome : null;
       const horario = horSel.value;
       const selAtual = opts.find(o=>o.value===evSel.value);
+      const limite = limiteEfetivo(itemObj, versao);
 
-      if(itemObj.limite!==null && itemObj.limite!==undefined && itemObj.limite>0){
-        const jaReservado = jaReservadoNoEvento(itemObj);
-        if((jaReservado + qtd) > itemObj.limite){
-          alert(`Não é possível adicionar: "${itemObj.item}" já soma ${jaReservado} de ${itemObj.limite} (contando o que já está reservado + o que já está neste pedido). Restam apenas ${Math.max(0,itemObj.limite-jaReservado)} unidade(s).`);
+      if(limite!==null && limite!==undefined && limite>0){
+        const jaReservado = jaReservadoNoEvento(itemObj, versaoNome);
+        if((jaReservado + qtd) > limite){
+          alert(`Não é possível adicionar: "${itemObj.item}${versao?' — '+versao.nome:''}" já soma ${jaReservado} de ${limite} (contando o que já está reservado + o que já está neste pedido). Restam apenas ${Math.max(0,limite-jaReservado)} unidade(s).`);
           return;
         }
       }
@@ -1696,15 +1858,15 @@ function renderReservas(c){
       }
       const opcoesTexto = Object.entries(opcoesSelecionadas).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join('/'):v}`).join('; ');
 
-      const valorTotalBase = calcularValorTotal(itemObj, qtd, selAtual.data);
+      const valorTotalBase = calcularValorTotal(itemEfetivo(itemObj, versao), qtd, selAtual.data);
       const ajusteTipo = ajusteTipoSel.value;
-      const ajusteValor = parseFloat(ajusteValorInput.value) || 0;
+      const ajusteValor = ajusteValorComSinal();
       const ajusteAplicado = calcularAjusteValor(ajusteTipo, ajusteValor, qtd, valorTotalBase);
       const ajusteMotivo = ajusteMotivoInput.value.trim();
       const valorTotal = Math.round((valorTotalBase + ajusteAplicado)*100)/100;
 
       carrinho.push({
-        itemId: itemObj.id, item: itemObj.item, horario, qtd, valorTotal, precoUnit: qtd?valorTotal/qtd:0,
+        itemId: itemObj.id, item: itemObj.item, versao: versaoNome, horario, qtd, valorTotal, precoUnit: qtd?valorTotal/qtd:0,
         ajusteTipo: ajusteAplicado?ajusteTipo:'nenhum', ajusteValor: ajusteAplicado?ajusteValor:0, ajusteAplicado,
         ajusteMotivo: ajusteAplicado?ajusteMotivo:'',
         opcoesSelecionadas, opcoesTexto, observacao: obsInput.value.trim(),
@@ -1740,19 +1902,23 @@ function renderReservas(c){
         const itemObj = itemAtual();
         const qtd = parseInt(qtdInput.value,10);
         if(!itemObj || !qtd || qtd<1){ alert('Preencha item e quantidade válida.'); return; }
+        const versao = versaoAtual();
+        const versaoNome = versao ? versao.nome : null;
+        const limite = limiteEfetivo(itemObj, versao);
 
-        if(itemObj.limite!==null && itemObj.limite!==undefined && itemObj.limite>0){
+        if(limite!==null && limite!==undefined && limite>0){
           let jaReservadoFresco;
           try{
-            const snap = await col('reservas')
-              .where('data','==',sel.data).where('tipo','==',sel.tipo).where('item','==',itemObj.item).get();
-            jaReservadoFresco = snap.docs.filter(d=>d.id!==editingReservaId).reduce((s,d)=>s+(d.data().qtd||0),0);
+            let query = col('reservas').where('data','==',sel.data).where('tipo','==',sel.tipo).where('item','==',itemObj.item);
+            if(versaoNome) query = query.where('versao','==',versaoNome);
+            const snap = await query.get();
+            jaReservadoFresco = snap.docs.filter(d=>d.id!==editingReservaId && (!versaoNome || (d.data().versao||null)===versaoNome)).reduce((s,d)=>s+(d.data().qtd||0),0);
           }catch(e){
             console.error('Falha ao revalidar limite', e);
-            jaReservadoFresco = jaReservadoNoEvento(itemObj);
+            jaReservadoFresco = jaReservadoNoEvento(itemObj, versaoNome);
           }
-          if((jaReservadoFresco + qtd) > itemObj.limite){
-            alert(`Não é possível salvar: "${itemObj.item}" já tem ${jaReservadoFresco} de ${itemObj.limite} reservados neste evento. Restam apenas ${Math.max(0,itemObj.limite-jaReservadoFresco)} unidade(s).`);
+          if((jaReservadoFresco + qtd) > limite){
+            alert(`Não é possível salvar: "${itemObj.item}${versao?' — '+versao.nome:''}" já tem ${jaReservadoFresco} de ${limite} reservados neste evento. Restam apenas ${Math.max(0,limite-jaReservadoFresco)} unidade(s).`);
             return;
           }
         }
@@ -1767,18 +1933,28 @@ function renderReservas(c){
           }
         }
         const opcoesTexto = Object.entries(opcoesSelecionadas).map(([k,v])=>`${k}: ${Array.isArray(v)?v.join('/'):v}`).join('; ');
-        const valorTotalBase = calcularValorTotal(itemObj, qtd, sel.data);
+        const valorTotalBase = calcularValorTotal(itemEfetivo(itemObj, versao), qtd, sel.data);
         const ajusteTipo = ajusteTipoSel.value;
-        const ajusteValor = parseFloat(ajusteValorInput.value) || 0;
+        const ajusteValor = ajusteValorComSinal();
         const ajusteAplicado = calcularAjusteValor(ajusteTipo, ajusteValor, qtd, valorTotalBase);
         const ajusteMotivo = ajusteMotivoInput.value.trim();
         const valorTotal = Math.round((valorTotalBase + ajusteAplicado)*100)/100;
         const precoUnit = qtd ? valorTotal/qtd : 0;
         const reservaOriginal = DB.reservas.find(r=>r.id===editingReservaId);
 
+        let valorPago;
+        if(pagoSel.value==='Sim') valorPago = valorTotal;
+        else if(pagoSel.value==='Parcial'){
+          const digitado = parseFloat(valorPagoInput.value);
+          if(isNaN(digitado) || digitado<0){ alert('Informe um valor pago válido para o pagamento parcial.'); return; }
+          valorPago = Math.min(digitado, valorTotal);
+        }
+        else valorPago = 0;
+        const valorPagoAntigo = reservaOriginal ? valorPagoDe(reservaOriginal) : 0;
+
         const dadosReserva = {
           data: sel.data, tipo: sel.tipo, horario: horSel.value,
-          cliente, item: itemObj.item, qtd, precoUnit, valorTotal,
+          cliente, item: itemObj.item, versao: versaoNome, qtd, precoUnit, valorTotal,
           ajusteTipo: ajusteAplicado ? ajusteTipo : 'nenhum',
           ajusteValor: ajusteAplicado ? ajusteValor : 0,
           ajusteAplicado,
@@ -1787,7 +1963,8 @@ function renderReservas(c){
           observacao: obsInput.value.trim(),
           formaPagamento: pagtoSel.value,
           pago: pagoSel.value,
-          dataPagamento: proximaDataPagamento(pagoSel.value, reservaOriginal?reservaOriginal.pago:'Não', reservaOriginal?reservaOriginal.dataPagamento:null),
+          valorPago,
+          dataPagamento: proximaDataPagamento(valorPago, valorPagoAntigo, reservaOriginal?reservaOriginal.dataPagamento:null),
           entregue: entregueSel.value,
         };
 
@@ -1802,24 +1979,38 @@ function renderReservas(c){
 
       // modo pedido novo: cria uma reserva independente por item do carrinho
       if(!carrinho.length){ alert('Adicione pelo menos um item ao pedido antes de finalizar.'); return; }
+      if(pagoSel.value==='Parcial' && carrinho.length>1){
+        alert('Pagamento parcial na hora de finalizar só funciona quando o pedido tem 1 item só. Finalize como "Não" ou "Sim" e ajuste o pagamento depois, item por item, em "Pedidos Lançados".');
+        return;
+      }
+      let valorPagoDigitadoCarrinho = 0;
+      if(pagoSel.value==='Parcial'){
+        valorPagoDigitadoCarrinho = parseFloat(valorPagoInput.value);
+        if(isNaN(valorPagoDigitadoCarrinho) || valorPagoDigitadoCarrinho<0){ alert('Informe um valor pago válido para o pagamento parcial.'); return; }
+      }
 
-      // revalida no Firestore o limite de produção de cada item único do carrinho (soma de todas as linhas daquele item)
-      const itensUnicos = [...new Set(carrinho.map(l=>l.item))];
-      for(const nomeItem of itensUnicos){
+      // revalida no Firestore o limite de produção de cada combinação item+versão única do carrinho
+      const combosUnicos = [...new Set(carrinho.map(l=>`${l.item}||${l.versao||''}`))];
+      for(const combo of combosUnicos){
+        const [nomeItem, versaoNomeRaw] = combo.split('||');
+        const versaoNome = versaoNomeRaw || null;
         const itemObj = DB.cardapio.find(i=>i.item===nomeItem);
-        if(itemObj && itemObj.limite!==null && itemObj.limite!==undefined && itemObj.limite>0){
-          const qtdCarrinho = carrinho.filter(l=>l.item===nomeItem).reduce((s,l)=>s+l.qtd,0);
+        const versaoObj = versaoNome && itemObj ? (itemObj.versoes||[]).find(v=>v.nome===versaoNome) : null;
+        const limite = itemObj ? limiteEfetivo(itemObj, versaoObj) : null;
+        if(itemObj && limite!==null && limite!==undefined && limite>0){
+          const qtdCarrinho = carrinho.filter(l=>l.item===nomeItem && (l.versao||null)===versaoNome).reduce((s,l)=>s+l.qtd,0);
           let jaReservadoFresco;
           try{
-            const snap = await col('reservas')
-              .where('data','==',sel.data).where('tipo','==',sel.tipo).where('item','==',nomeItem).get();
-            jaReservadoFresco = snap.docs.reduce((s,d)=>s+(d.data().qtd||0),0);
+            let query = col('reservas').where('data','==',sel.data).where('tipo','==',sel.tipo).where('item','==',nomeItem);
+            if(versaoNome) query = query.where('versao','==',versaoNome);
+            const snap = await query.get();
+            jaReservadoFresco = snap.docs.filter(d=>!versaoNome || (d.data().versao||null)===versaoNome).reduce((s,d)=>s+(d.data().qtd||0),0);
           }catch(e){
             console.error('Falha ao revalidar limite', e);
-            jaReservadoFresco = DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo && r.item===nomeItem).reduce((s,r)=>s+r.qtd,0);
+            jaReservadoFresco = DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo && r.item===nomeItem && (r.versao||null)===versaoNome).reduce((s,r)=>s+r.qtd,0);
           }
-          if((jaReservadoFresco + qtdCarrinho) > itemObj.limite){
-            alert(`Não é possível finalizar: "${nomeItem}" já tem ${jaReservadoFresco} de ${itemObj.limite} reservados neste evento, e este pedido pede mais ${qtdCarrinho}. Restam apenas ${Math.max(0,itemObj.limite-jaReservadoFresco)} unidade(s) — ajuste a quantidade e tente de novo.`);
+          if((jaReservadoFresco + qtdCarrinho) > limite){
+            alert(`Não é possível finalizar: "${nomeItem}${versaoNome?' — '+versaoNome:''}" já tem ${jaReservadoFresco} de ${limite} reservados neste evento, e este pedido pede mais ${qtdCarrinho}. Restam apenas ${Math.max(0,limite-jaReservadoFresco)} unidade(s) — ajuste a quantidade e tente de novo.`);
             return;
           }
         }
@@ -1827,15 +2018,20 @@ function renderReservas(c){
 
       const vendedor = userName();
       for(const linha of carrinho){
+        let valorPago;
+        if(pagoSel.value==='Sim') valorPago = linha.valorTotal;
+        else if(pagoSel.value==='Parcial') valorPago = Math.min(valorPagoDigitadoCarrinho, linha.valorTotal);
+        else valorPago = 0;
         const dadosReserva = {
           data: sel.data, tipo: sel.tipo, horario: linha.horario,
-          cliente, item: linha.item, qtd: linha.qtd, precoUnit: linha.precoUnit, valorTotal: linha.valorTotal,
+          cliente, item: linha.item, versao: linha.versao||null, qtd: linha.qtd, precoUnit: linha.precoUnit, valorTotal: linha.valorTotal,
           ajusteTipo: linha.ajusteTipo, ajusteValor: linha.ajusteValor, ajusteAplicado: linha.ajusteAplicado, ajusteMotivo: linha.ajusteMotivo,
           opcoesSelecionadas: linha.opcoesSelecionadas, opcoesTexto: linha.opcoesTexto,
           observacao: linha.observacao,
           formaPagamento: pagtoSel.value,
           pago: pagoSel.value,
-          dataPagamento: proximaDataPagamento(pagoSel.value, 'Não', null),
+          valorPago,
+          dataPagamento: proximaDataPagamento(valorPago, 0, null),
           entregue: entregueSel.value,
           vendedor,
         };
@@ -1846,7 +2042,7 @@ function renderReservas(c){
       limparFormReserva();
     });
 
-    refreshOpcoesItem(); refreshPrecoPreview();
+    refreshVersaoOptions(); refreshOpcoesItem(); refreshPrecoPreview();
     renderCarrinho();
   }
 
@@ -1860,7 +2056,7 @@ function renderReservas(c){
   ];
   const filterWrap = el(`<div class="filters-row">
     <div><label>Evento</label><select id="filtEvento"><option value="">Todos</option>${eventoOptionsHtml(opts, window._filtros.evento)}</select></div>
-    <div><label>Pago?</label><select id="filtPago"><option value="">Todos</option><option ${window._filtros.pago==='Sim'?'selected':''}>Sim</option><option ${window._filtros.pago==='Não'?'selected':''}>Não</option></select></div>
+    <div><label>Pago?</label><select id="filtPago"><option value="">Todos</option><option ${window._filtros.pago==='Sim'?'selected':''}>Sim</option><option ${window._filtros.pago==='Parcial'?'selected':''}>Parcial</option><option ${window._filtros.pago==='Não'?'selected':''}>Não</option></select></div>
     <div><label>Entregue?</label><select id="filtEntregue"><option value="">Todos</option><option ${window._filtros.entregue==='Sim'?'selected':''}>Sim</option><option ${window._filtros.entregue==='Não'?'selected':''}>Não</option></select></div>
     <div><label>Ordenar por</label><select id="ordCampo">${SORT_OPCOES.map(o=>`<option value="${o.key}" ${window._reservaSort.key===o.key?'selected':''}>${o.label}</option>`).join('')}</select></div>
     <div><label>Direção</label><select id="ordDir"><option value="asc" ${window._reservaSort.dir==='asc'?'selected':''}>▲ Crescente</option><option value="desc" ${window._reservaSort.dir==='desc'?'selected':''}>▼ Decrescente</option></select></div>
@@ -1904,23 +2100,34 @@ function renderReservas(c){
 
   function reservaCardHtml(r){
     const temObs = (r.observacao&&r.observacao.trim()) || (r.opcoesTexto&&r.opcoesTexto.trim());
+    const totalR = valorReserva(r);
+    const vPago = valorPagoDe(r);
+    const statusPag = statusPagamento(vPago, totalR);
+    const pillClass = statusPag==='Sim' ? 'on' : (statusPag==='Parcial' ? 'parcial' : '');
+    const pillLabel = statusPag==='Sim' ? '✓ Pago' : (statusPag==='Parcial' ? `◐ Parcial: ${fmtMoney(vPago)} de ${fmtMoney(totalR)}` : 'Pago: Não');
     return `<div class="pedido-card ${temObs?'destaque':''}" data-id="${r.id}">
       <div class="pedido-topo">
         <div class="pedido-cliente">${escapeHtml(r.cliente)}${whatsappBtn(contatoDoCliente(r.cliente))}</div>
         <div class="pedido-hora">${fmtDateBR(r.data)} · ${r.tipo} · ${r.horario}</div>
       </div>
-      <div class="pedido-item-linha"><span>${escapeHtml(r.item)} × ${r.qtd}</span><span class="valor">${fmtMoney(valorReserva(r))}</span></div>
+      <div class="pedido-item-linha"><span>${escapeHtml(r.item)}${r.versao?` — ${escapeHtml(r.versao)}`:''} × ${r.qtd}</span><span class="valor">${fmtMoney(totalR)}</span></div>
       <div class="pedido-meta">${r.formaPagamento} · Lançado por ${escapeHtml(r.vendedor||'')}</div>
       ${r.opcoesTexto?`<div class="obs-box">${escapeHtml(r.opcoesTexto)}</div>`:''}
       ${r.ajusteAplicado?`<div class="obs-box ajuste">${r.ajusteAplicado>0?'➕':'➖'} ${escapeHtml(descreverAjuste(r.ajusteTipo, r.ajusteValor, r.ajusteAplicado))}${r.ajusteMotivo?` — ${escapeHtml(r.ajusteMotivo)}`:''}</div>`:''}
       ${r.observacao?`<div class="obs-box warn">⚠️ ${escapeHtml(r.observacao)}</div>`:''}
       <div class="pills-row">
-        <button type="button" class="pill-toggle ${r.pago==='Sim'?'on':''}" data-pago="${r.id}">${r.pago==='Sim'?'✓ Pago':'Pago: Não'}</button>
+        <button type="button" class="pill-toggle ${pillClass}" data-pago="${r.id}" title="Clique pra marcar pago total, ou de novo pra desfazer">${pillLabel}</button>
         <button type="button" class="pill-toggle ${r.entregue==='Sim'?'on':''}" data-ent="${r.id}">${r.entregue==='Sim'?'✓ Entregue':'Entregue: Não'}</button>
         <button type="button" class="pill-toggle ${r.montada==='Sim'?'on':''}" data-montada="${r.id}">${r.montada==='Sim'?'✓ Montada':'Montada: Não'}</button>
       </div>
+      <div class="parcial-wrap" data-parcialwrap="${r.id}" style="display:none; gap:8px; align-items:center; margin:-4px 0 10px;">
+        <input type="number" step="0.01" min="0" max="${totalR}" value="${vPago}" data-parcialinput="${r.id}" style="width:100px;">
+        <span class="small-note" style="margin:0;">de ${fmtMoney(totalR)}</span>
+        <button type="button" class="btn small" data-salvarparcial="${r.id}">Salvar</button>
+      </div>
       <div class="acoes-row">
         <button type="button" data-editreserva="${r.id}">Editar</button>
+        <button type="button" data-parcial="${r.id}">💰 Pagamento parcial</button>
         <button type="button" data-confirmar="${r.id}" class="${r.confirmadoEm?'confirmado':''}">${r.confirmadoEm?'✓ Avisado (reenviar)':'Avisar Cliente'}</button>
         <button type="button" class="excluir" data-del="${r.id}">Excluir</button>
       </div>
@@ -1977,10 +2184,31 @@ function renderReservas(c){
   }));
   tableWrap.querySelectorAll('[data-pago]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const r = DB.reservas.find(x=>x.id===btn.dataset.pago);
-    const novo = r.pago==='Sim'?'Não':'Sim';
-    const dataPagamento = proximaDataPagamento(novo, r.pago, r.dataPagamento);
-    await col('reservas').doc(r.id).update({pago:novo, dataPagamento});
-    await auditLog('Atualizou', 'reservas', `Pagamento de ${r.cliente} (${r.item}): ${r.pago} → ${novo}${novo==='Sim'?` (recebido em ${fmtDateBR(dataPagamento)})`:''}`);
+    const total = valorReserva(r);
+    const valorPagoAntigo = valorPagoDe(r);
+    const jaEstaPagoTotal = statusPagamento(valorPagoAntigo, total)==='Sim';
+    const novoValorPago = jaEstaPagoTotal ? 0 : total; // toggle rápido: quita tudo de uma vez, ou desfaz
+    const novoPago = jaEstaPagoTotal ? 'Não' : 'Sim';
+    const dataPagamento = proximaDataPagamento(novoValorPago, valorPagoAntigo, r.dataPagamento);
+    await col('reservas').doc(r.id).update({pago:novoPago, valorPago:novoValorPago, dataPagamento});
+    await auditLog('Atualizou', 'reservas', `Pagamento de ${r.cliente} (${r.item}): ${r.pago} → ${novoPago}${novoPago==='Sim'?` (recebido em ${fmtDateBR(dataPagamento)})`:''}`);
+  }));
+  tableWrap.querySelectorAll('[data-parcial]').forEach(btn=>btn.addEventListener('click', ()=>{
+    const wrap = tableWrap.querySelector(`[data-parcialwrap="${btn.dataset.parcial}"]`);
+    if(wrap) wrap.style.display = wrap.style.display==='none' ? 'flex' : 'none';
+  }));
+  tableWrap.querySelectorAll('[data-salvarparcial]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const r = DB.reservas.find(x=>x.id===btn.dataset.salvarparcial);
+    const input = tableWrap.querySelector(`[data-parcialinput="${btn.dataset.salvarparcial}"]`);
+    const digitado = parseFloat(input.value);
+    if(isNaN(digitado) || digitado<0){ alert('Informe um valor de pagamento válido.'); return; }
+    const total = valorReserva(r);
+    const valorPagoAntigo = valorPagoDe(r);
+    const valorPago = Math.min(digitado, total);
+    const pago = statusPagamento(valorPago, total);
+    const dataPagamento = proximaDataPagamento(valorPago, valorPagoAntigo, r.dataPagamento);
+    await col('reservas').doc(r.id).update({valorPago, pago, dataPagamento});
+    await auditLog('Atualizou', 'reservas', `Pagamento de ${r.cliente} (${r.item}): ${fmtMoney(valorPagoAntigo)} → ${fmtMoney(valorPago)} de ${fmtMoney(total)}${pago==='Sim'?' (quitado)':pago==='Parcial'?' (parcial)':' (zerado)'}`);
   }));
   tableWrap.querySelectorAll('[data-ent]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const r = DB.reservas.find(x=>x.id===btn.dataset.ent);
@@ -2212,7 +2440,7 @@ function renderDespesas(c){
 function dataEntradaReserva(r){ return r.dataPagamento || r.data; }
 
 function calcularResumoCaixa(){
-  const entradasVendas = DB.reservas.filter(r=>r.pago==='Sim').reduce((s,r)=>s+valorReserva(r),0);
+  const entradasVendas = DB.reservas.reduce((s,r)=>s+valorPagoDe(r),0);
   const entradasAvulsasTotal = DB.entradasAvulsas.reduce((s,e)=>s+Number(e.valor),0);
   const totalEntradas = entradasVendas + entradasAvulsasTotal;
   const totalSaidas = DB.despesas.reduce((s,d)=>s+Number(d.valor),0);
@@ -2221,12 +2449,12 @@ function calcularResumoCaixa(){
 
 function construirMovimentosCaixa(){
   const movs = [];
-  DB.reservas.filter(r=>r.pago==='Sim').forEach(r=>{
+  DB.reservas.filter(r=>valorPagoDe(r)>0).forEach(r=>{
     movs.push({
       data: dataEntradaReserva(r), tipoMov:'entrada', origem:'venda',
-      descricao: `${r.cliente} — ${r.item}`,
+      descricao: `${r.cliente} — ${r.item}${r.pago==='Parcial'?' (parcial)':''}`,
       categoriaEvento: r.tipo ? `${fmtDateBR(r.data)} — ${r.tipo}` : '—',
-      valor: valorReserva(r), idOrigem: r.id,
+      valor: valorPagoDe(r), idOrigem: r.id,
     });
   });
   DB.entradasAvulsas.forEach(e=>{
@@ -2262,7 +2490,7 @@ function renderCaixa(c){
     <div class="kpi"><div class="label">Entradas de Vendas</div><div class="value">${fmtMoney(resumo.entradasVendas)}</div></div>
     <div class="kpi"><div class="label">Entradas Avulsas</div><div class="value">${fmtMoney(resumo.entradasAvulsasTotal)}</div></div>
   </div></div>`));
-  c.appendChild(el(`<div class="small-note" style="margin:-8px 0 16px;">"Entradas de Vendas" conta só os pedidos já marcados como Pago, na data real do pagamento — pedidos ainda não pagos não entram no caixa.</div>`));
+  c.appendChild(el(`<div class="small-note" style="margin:-8px 0 16px;">"Entradas de Vendas" conta o valor já efetivamente recebido de cada pedido, na data real de cada pagamento — em pedido com pagamento parcial, só a parte já paga entra aqui; o saldo pendente aparece nos relatórios de pendências, não no caixa.</div>`));
 
   c.appendChild(el(`<div class="section-title">Registrar Entrada Avulsa</div>`));
   c.appendChild(el(`<div class="small-note" style="margin-bottom:10px;">Use isso para dinheiro que entra sem ser de uma venda — doações, repasses, etc.</div>`));
@@ -2311,11 +2539,11 @@ function renderCaixa(c){
   c.appendChild(two1c);
 
   const eventoAgg = {};
-  DB.reservas.filter(r=>r.pago==='Sim').forEach(r=>{
+  DB.reservas.filter(r=>valorPagoDe(r)>0).forEach(r=>{
     const k = r.tipo ? eventoKey(r.data, r.tipo) : '__semevento';
     const label = r.tipo ? `${fmtDateBR(r.data)} — ${r.tipo}` : 'Sem evento vinculado';
     eventoAgg[k] = eventoAgg[k] || {label, total:0};
-    eventoAgg[k].total += valorReserva(r);
+    eventoAgg[k].total += valorPagoDe(r);
   });
   const eventoEntries = Object.values(eventoAgg).sort((a,b)=>b.total-a.total);
   c.appendChild(el(`<div class="section-title">Entradas por Evento/Cantina</div>`));
