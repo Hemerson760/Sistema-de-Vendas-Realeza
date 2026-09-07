@@ -259,6 +259,7 @@ const MINISTERIOS = [
     mensagemNome: 'Sistema Realeza',
     mensagemRodape: 'Ministério de Casais - Bodas 2026',
     emoji: '👑',
+    mostraCoroa: true, // a coroa é o símbolo do Realeza (casais/bodas) — não faz sentido pros outros ministérios
   },
   {
     id: 'voluntariado',
@@ -270,6 +271,7 @@ const MINISTERIOS = [
     mensagemNome: 'Sistema Voluntariado',
     mensagemRodape: 'Ministério de Voluntariado',
     emoji: '🤝',
+    mostraCoroa: false,
   },
 ];
 let ministerioAtual = MINISTERIOS[0];
@@ -304,7 +306,7 @@ const AREAS_PERMISSAO = [
   {key:'dashboard', label:'Dashboards', acoes:['ver']},
 ];
 
-let DB = { eventos:[], cardapio:[], reservas:[], despesas:[], entradasAvulsas:[], clientes:[], categoriasDespesas:[], categoriasCardapio:[], auditoria:[], equipe:[] };
+let DB = { eventos:[], cardapio:[], reservas:[], despesas:[], entradasAvulsas:[], clientes:[], categoriasDespesas:[], categoriasCardapio:[], contasCaixa:[], auditoria:[], equipe:[] };
 let currentTab = 'dashboard';
 /* Fica true assim que a pessoa começa a digitar algo (um pedido novo, uma despesa, um evento...)
    em alguma aba com formulário, e ainda não finalizou/cancelou. Enquanto for true, um dado novo
@@ -397,6 +399,32 @@ function eventoOptionsHtml(opts, selectedValue){
     const passado = o.data < hojeStr;
     return `<option value="${o.value}" ${selectedValue===o.value?'selected':''} style="${passado?'color:#B3A98C;':''}">${o.label}${passado?' (já passou)':''}</option>`;
   }).join('');
+}
+/* "Cantina atual" = o evento mais próximo que ainda não passou (hoje ou futuro) — eventosOptions()
+   já ordena futuros/hoje primeiro, do mais próximo pro mais distante, então basta olhar o primeiro
+   item que se qualifica. Não existe cantina atual quando todos os eventos já passaram (ou não existe
+   nenhum) — devolve '' nesse caso. */
+function eventoAtualPadrao(opts){
+  const hoje = hojeStr();
+  const atual = opts.find(o=>o.data>=hoje);
+  return atual ? atual.value : '';
+}
+/* Mantém a seleção de evento de uma tela (Dashboard por Evento, "Nova Reserva", filtro de
+   "Pedidos Lançados") sempre apontando pra "cantina atual" enquanto a pessoa não escolher nada
+   manualmente ali — resolve o problema de a tela continuar mostrando pra sempre a última cantina
+   já realizada, mesmo bem depois do dia dela ter passado. Assim que a pessoa escolhe algo nesse
+   seletor (mesmo que seja essa mesma cantina atual, "Todos", ou deixar em branco de propósito), a
+   escolha fica travada até ela mudar de novo — não some sozinha nem troca sozinha embaixo dela.
+   Também recalcula se o valor guardado não existe mais nas opções (evento excluído, troca de
+   ministério) ou não é um dos `valoresEspeciais` aceitos (ex: '__todos'). */
+function sincronizarSelecaoEvento(getVal, setVal, getTocado, setTocado, opts, valoresEspeciais){
+  const especiais = valoresEspeciais || [];
+  const valorAtual = getVal();
+  const aindaValido = especiais.includes(valorAtual) || !!opts.find(o=>o.value===valorAtual);
+  if(!getTocado() || !aindaValido){
+    setVal(eventoAtualPadrao(opts));
+    setTocado(false);
+  }
 }
 function el(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstChild; }
 function escapeHtml(s){ return String(s??'').replace(/[&<>"']/g, m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
@@ -513,17 +541,17 @@ async function auditLog(acao, colecao, resumo){
    relatórios sem ninguém perceber. Agora existe uma lista fixa por área (coleção
    categoriasDespesas / categoriasCardapio), só o administrador cadastra/remove categorias,
    e todo mundo escolhe de um <select> em vez de digitar — elimina o typo na raiz. */
-function renderGerenciadorCategorias(c, colecaoNome, listaAtual){
+function renderGerenciadorCategorias(c, colecaoNome, listaAtual, registros, colecaoRegistros){
   if(!isAdmin()) return; // só admin cadastra/remove — é o que evita a duplicidade de verdade
   const nomes = listaAtual.map(x=>x.nome);
   const wrap = el(`<div class="frame" style="margin-bottom:16px;">
-    <div class="small-note" style="margin:0 0 8px;">Só administradores cadastram/removem categorias — assim todo mundo escolhe da mesma lista em vez de digitar, e não corre o risco de "Salgado", "Salgados" e "Salgador" virarem 3 categorias diferentes.</div>
+    <div class="small-note" style="margin:0 0 8px;">Só administradores cadastram/removem/renomeiam categorias — assim todo mundo escolhe da mesma lista em vez de digitar, e não corre o risco de "Salgado", "Salgados" e "Salgador" virarem 3 categorias diferentes.</div>
     <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
       <div style="flex:1; min-width:180px;"><label>Nova categoria</label><input type="text" id="novaCatInput"></div>
       <button type="button" class="btn secondary" id="btnAddCat">+ Adicionar categoria</button>
     </div>
     <div style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;">
-      ${listaAtual.length ? listaAtual.slice().sort((a,b)=>a.nome.localeCompare(b.nome)).map(cat=>`<span class="badge nao" style="display:inline-flex; align-items:center; gap:6px;">${escapeHtml(cat.nome)}<button type="button" data-delcat="${cat.id}" title="Remover categoria" style="border:none; background:none; cursor:pointer; color:inherit; font-weight:bold; padding:0;">✕</button></span>`).join('') : '<span class="small-note" style="margin:0;">Nenhuma categoria cadastrada ainda.</span>'}
+      ${listaAtual.length ? listaAtual.slice().sort((a,b)=>a.nome.localeCompare(b.nome)).map(cat=>`<span class="badge nao" style="display:inline-flex; align-items:center; gap:6px;">${escapeHtml(cat.nome)}<button type="button" data-editcat="${cat.id}" title="Renomear categoria" style="border:none; background:none; cursor:pointer; color:inherit; padding:0;">✎</button><button type="button" data-delcat="${cat.id}" title="Remover categoria" style="border:none; background:none; cursor:pointer; color:inherit; font-weight:bold; padding:0;">✕</button></span>`).join('') : '<span class="small-note" style="margin:0;">Nenhuma categoria cadastrada ainda.</span>'}
     </div>
   </div>`);
   c.appendChild(wrap);
@@ -544,6 +572,25 @@ function renderGerenciadorCategorias(c, colecaoNome, listaAtual){
       input.value = '';
     }catch(e){ alert('Não foi possível salvar. Confira se você é administrador.'); console.error(e); }
   });
+  wrap.querySelectorAll('[data-editcat]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const cat = listaAtual.find(x=>x.id===btn.dataset.editcat);
+    if(!cat) return;
+    const novoNome = prompt(`Renomear categoria "${cat.nome}" para:`, cat.nome);
+    if(novoNome===null) return;
+    const nomeTrim = novoNome.trim();
+    if(!nomeTrim || normalizarNome(nomeTrim)===normalizarNome(cat.nome)) return;
+    const exata = listaAtual.find(c2=>c2.id!==cat.id && normalizarNome(c2.nome)===normalizarNome(nomeTrim));
+    if(exata){ alert(`Já existe a categoria "${exata.nome}".`); return; }
+    try{
+      await col(colecaoNome).doc(cat.id).update({ nome: nomeTrim });
+      await auditLog('Atualizou', colecaoNome, `Categoria "${cat.nome}" renomeada para "${nomeTrim}"`);
+      const afetados = (registros||[]).filter(r=>normalizarNome(r.categoria||'')===normalizarNome(cat.nome));
+      if(afetados.length && confirm(`${afetados.length} lançamento(s) já usam o nome antigo "${cat.nome}". Deseja atualizá-los também para "${nomeTrim}"?`)){
+        for(const r of afetados){ await col(colecaoRegistros).doc(r.id).update({ categoria: nomeTrim }); }
+        await auditLog('Atualizou', colecaoRegistros, `${afetados.length} lançamento(s) migrados da categoria "${cat.nome}" para "${nomeTrim}"`);
+      }
+    }catch(e){ alert('Não foi possível renomear. Confira se você é administrador.'); console.error(e); }
+  }));
   wrap.querySelectorAll('[data-delcat]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const cat = listaAtual.find(x=>x.id===btn.dataset.delcat);
     if(!cat) return;
@@ -553,6 +600,54 @@ function renderGerenciadorCategorias(c, colecaoNome, listaAtual){
       await auditLog('Excluiu', colecaoNome, `Categoria "${cat.nome}" removida`);
     }catch(e){ alert('Não foi possível remover. Confira se você é administrador.'); }
   }));
+
+  /* Categorias já digitadas nos lançamentos (de antes de existir a lista fixa) que ainda não
+     foram cadastradas — agrupadas por nome parecido, pra não importar "Salgado" e "Salgados"
+     como duas categorias diferentes. Só aparece quando existe algo pra importar. */
+  if(registros && registros.length && colecaoRegistros){
+    const semRegistro = (registros||[])
+      .map(r=>(r.categoria||'').trim())
+      .filter(nome => nome && !listaAtual.some(cat=>normalizarNome(cat.nome)===normalizarNome(nome)));
+    const clusters = [];
+    semRegistro.forEach(nome=>{
+      const cl = clusters.find(c2=> c2.variantes.some(v=>normalizarNome(v)===normalizarNome(nome)) || encontrarSimilarEmLista(nome, c2.variantes));
+      if(cl){ if(!cl.variantes.some(v=>normalizarNome(v)===normalizarNome(nome))) cl.variantes.push(nome); cl.qtd++; }
+      else clusters.push({ variantes:[nome], qtd:1 });
+    });
+    if(clusters.length){
+      clusters.forEach(cl=>{
+        // sugere o nome escrito com mais frequência dentro do grupo como padrão
+        const contagemPorVariante = {};
+        semRegistro.forEach(nome=>{ if(cl.variantes.some(v=>normalizarNome(v)===normalizarNome(nome))) contagemPorVariante[nome]=(contagemPorVariante[nome]||0)+1; });
+        cl.sugestao = Object.entries(contagemPorVariante).sort((a,b)=>b[1]-a[1])[0][0];
+      });
+      const importWrap = el(`<div class="frame" style="margin-bottom:16px; border-color:var(--warn);">
+        <div class="small-note" style="margin:0 0 10px;">Encontramos ${clusters.length} categoria(s) já usadas em lançamentos antigos que ainda não estão na lista fixa acima — algumas podem ser a mesma coisa escrita de formas diferentes. Confira o nome sugerido (edite se quiser) e cadastre pra corrigir de vez.</div>
+        ${clusters.map((cl,i)=>`<div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:8px; padding-bottom:8px; ${i<clusters.length-1?'border-bottom:1px solid var(--line);':''}">
+          <div style="flex:1; min-width:220px;"><span class="small-note" style="margin:0;">Encontrado como: ${cl.variantes.map(v=>escapeHtml(v)).join(', ')} (${cl.qtd} lançamento${cl.qtd>1?'s':''})</span></div>
+          <input type="text" value="${escapeHtml(cl.sugestao)}" data-clusterinput="${i}" style="width:180px;">
+          <button type="button" class="btn secondary small" data-clusterimportar="${i}">Cadastrar e corrigir lançamentos</button>
+        </div>`).join('')}
+      </div>`);
+      c.appendChild(importWrap);
+      importWrap.querySelectorAll('[data-clusterimportar]').forEach(btn=>btn.addEventListener('click', async ()=>{
+        const i = Number(btn.dataset.clusterimportar);
+        const cl = clusters[i];
+        const input = importWrap.querySelector(`[data-clusterinput="${i}"]`);
+        const nomeFinal = input.value.trim();
+        if(!nomeFinal){ alert('Digite um nome pra categoria.'); return; }
+        const exata = listaAtual.find(cat=>normalizarNome(cat.nome)===normalizarNome(nomeFinal));
+        if(exata){ alert(`Já existe a categoria "${exata.nome}" — escolha esse nome exatamente pra reaproveitar, ou digite outro.`); return; }
+        try{
+          await col(colecaoNome).add({ nome: nomeFinal });
+          await auditLog('Criou', colecaoNome, `Categoria "${nomeFinal}" importada de lançamentos antigos (${cl.variantes.join(', ')})`);
+          const afetados = registros.filter(r=>cl.variantes.some(v=>normalizarNome(v)===normalizarNome((r.categoria||'').trim())));
+          for(const r of afetados){ await col(colecaoRegistros).doc(r.id).update({ categoria: nomeFinal }); }
+          if(afetados.length) await auditLog('Atualizou', colecaoRegistros, `${afetados.length} lançamento(s) migrados para a categoria "${nomeFinal}"`);
+        }catch(e){ alert('Não foi possível importar. Confira se você é administrador.'); console.error(e); }
+      }));
+    }
+  }
 }
 /* Monta as <option> do <select> de categoria a partir da lista fixa, preservando (como opção
    extra, marcada como "não cadastrada") um valor antigo/livre que o item/despesa já tinha antes
@@ -565,6 +660,81 @@ function categoriaOptionsHtml(listaAtual, valorAtual){
     html += `<option value="${escapeHtml(valorAtual)}">${escapeHtml(valorAtual)} (não cadastrada)</option>`;
   }
   return html;
+}
+
+/* ==================== CONTAS DO CAIXA (Espécie / Banco / etc.) ====================
+   Mesma ideia das categorias fixas acima, só que pra diferenciar "onde o dinheiro está"
+   (ex: "Espécie" e "Conta do Banco"), permitindo ver o saldo de cada uma separado no
+   Caixa. Lista fixa, só admin cadastra/renomeia/remove — como é um campo novo, não existe
+   dado antigo em texto livre pra importar (diferente das categorias de Despesas/Cardápio). */
+function contaOptionsHtml(listaAtual, valorAtual){
+  const nomes = listaAtual.slice().sort((a,b)=>a.nome.localeCompare(b.nome)).map(c=>c.nome);
+  let html = `<option value="">— Sem conta definida —</option>`;
+  html += nomes.map(n=>`<option value="${escapeHtml(n)}">${escapeHtml(n)}</option>`).join('');
+  if(valorAtual && !nomes.includes(valorAtual)){
+    html += `<option value="${escapeHtml(valorAtual)}">${escapeHtml(valorAtual)} (não cadastrada)</option>`;
+  }
+  return html;
+}
+function renderGerenciadorContas(c){
+  if(!isAdmin()) return; // só admin cadastra/remove/renomeia — mesma lógica das categorias fixas
+  const listaAtual = DB.contasCaixa;
+  const wrap = el(`<div class="frame" style="margin-bottom:16px;">
+    <div class="small-note" style="margin:0 0 8px;">Cadastre aqui as "contas" onde o dinheiro fica (ex: Espécie, Conta do Banco) pra poder ver o saldo de cada uma separado, mais abaixo em "Saldo por Conta". Campo opcional em cada lançamento — quem não escolher uma conta continua funcionando normalmente, só sem essa quebra extra.</div>
+    <div style="display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap;">
+      <div style="flex:1; min-width:180px;"><label>Nova conta</label><input type="text" id="novaContaInput" placeholder="Ex: Espécie"></div>
+      <button type="button" class="btn secondary" id="btnAddConta">+ Adicionar conta</button>
+    </div>
+    <div style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap;">
+      ${listaAtual.length ? listaAtual.slice().sort((a,b)=>a.nome.localeCompare(b.nome)).map(cta=>`<span class="badge nao" style="display:inline-flex; align-items:center; gap:6px;">${escapeHtml(cta.nome)}<button type="button" data-editconta="${cta.id}" title="Renomear conta" style="border:none; background:none; cursor:pointer; color:inherit; padding:0;">✎</button><button type="button" data-delconta="${cta.id}" title="Remover conta" style="border:none; background:none; cursor:pointer; color:inherit; font-weight:bold; padding:0;">✕</button></span>`).join('') : '<span class="small-note" style="margin:0;">Nenhuma conta cadastrada ainda.</span>'}
+    </div>
+  </div>`);
+  c.appendChild(wrap);
+  wrap.querySelector('#btnAddConta').addEventListener('click', async ()=>{
+    const input = wrap.querySelector('#novaContaInput');
+    const nome = input.value.trim();
+    if(!nome) return;
+    const exata = listaAtual.find(cta=>normalizarNome(cta.nome)===normalizarNome(nome));
+    if(exata){ alert(`Já existe a conta "${exata.nome}".`); return; }
+    try{
+      await col('contasCaixa').add({ nome });
+      await auditLog('Criou', 'contasCaixa', `Conta "${nome}" adicionada`);
+      input.value = '';
+    }catch(e){ alert('Não foi possível salvar. Confira se você é administrador.'); console.error(e); }
+  });
+  wrap.querySelectorAll('[data-editconta]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const cta = listaAtual.find(x=>x.id===btn.dataset.editconta);
+    if(!cta) return;
+    const novoNome = prompt(`Renomear conta "${cta.nome}" para:`, cta.nome);
+    if(novoNome===null) return;
+    const nomeTrim = novoNome.trim();
+    if(!nomeTrim || normalizarNome(nomeTrim)===normalizarNome(cta.nome)) return;
+    const exata = listaAtual.find(c2=>c2.id!==cta.id && normalizarNome(c2.nome)===normalizarNome(nomeTrim));
+    if(exata){ alert(`Já existe a conta "${exata.nome}".`); return; }
+    try{
+      await col('contasCaixa').doc(cta.id).update({ nome: nomeTrim });
+      await auditLog('Atualizou', 'contasCaixa', `Conta "${cta.nome}" renomeada para "${nomeTrim}"`);
+      const afetadosDespesas = DB.despesas.filter(d=>normalizarNome(d.conta||'')===normalizarNome(cta.nome));
+      const afetadosEntradas = DB.entradasAvulsas.filter(e=>normalizarNome(e.conta||'')===normalizarNome(cta.nome));
+      const afetadosReservas = DB.reservas.filter(r=>normalizarNome(r.conta||'')===normalizarNome(cta.nome));
+      const totalAfetados = afetadosDespesas.length + afetadosEntradas.length + afetadosReservas.length;
+      if(totalAfetados && confirm(`${totalAfetados} lançamento(s) já usam o nome antigo "${cta.nome}". Deseja atualizá-los também para "${nomeTrim}"?`)){
+        for(const d of afetadosDespesas){ await col('despesas').doc(d.id).update({ conta: nomeTrim }); }
+        for(const e of afetadosEntradas){ await col('entradasAvulsas').doc(e.id).update({ conta: nomeTrim }); }
+        for(const r of afetadosReservas){ await col('reservas').doc(r.id).update({ conta: nomeTrim }); }
+        await auditLog('Atualizou', 'contasCaixa', `${totalAfetados} lançamento(s) migrados da conta "${cta.nome}" para "${nomeTrim}"`);
+      }
+    }catch(e){ alert('Não foi possível renomear. Confira se você é administrador.'); console.error(e); }
+  }));
+  wrap.querySelectorAll('[data-delconta]').forEach(btn=>btn.addEventListener('click', async ()=>{
+    const cta = listaAtual.find(x=>x.id===btn.dataset.delconta);
+    if(!cta) return;
+    if(!confirm(`Remover a conta "${cta.nome}"? Lançamentos que já usam esse nome não são alterados — só deixa de aparecer pra escolher em novos lançamentos.`)) return;
+    try{
+      await col('contasCaixa').doc(cta.id).delete();
+      await auditLog('Excluiu', 'contasCaixa', `Conta "${cta.nome}" removida`);
+    }catch(e){ alert('Não foi possível remover. Confira se você é administrador.'); }
+  }));
 }
 
 /* ==================== AUTENTICAÇÃO ==================== */
@@ -686,6 +856,9 @@ function aplicarTemaMinisterio(m){
   if(eyebrowEl) eyebrowEl.textContent = m.eyebrow;
   if(titleEl) titleEl.textContent = m.nome;
   if(subtitleEl) subtitleEl.textContent = m.subtitle;
+  // A coroa (símbolo do Realeza — casais/bodas) só faz sentido pro Realeza; outros ministérios não a mostram.
+  const crownEl = document.querySelector('#app .crown');
+  if(crownEl) crownEl.style.display = m.mostraCoroa ? '' : 'none';
 }
 function atualizarUserBadge(){
   const badge = document.getElementById('userBadge');
@@ -708,7 +881,7 @@ async function entrarNoMinisterio(m, papel, permissoes){
   document.getElementById('app').style.display = 'block';
   atualizarUserBadge();
   pararListeners();
-  DB = { eventos:[], cardapio:[], reservas:[], despesas:[], entradasAvulsas:[], clientes:[], categoriasDespesas:[], categoriasCardapio:[], auditoria:[], equipe:[] };
+  DB = { eventos:[], cardapio:[], reservas:[], despesas:[], entradasAvulsas:[], clientes:[], categoriasDespesas:[], categoriasCardapio:[], contasCaixa:[], auditoria:[], equipe:[] };
   startListeners();
 }
 function renderSeletorMinisterio(permitirCancelar){
@@ -839,10 +1012,16 @@ function startListeners(){
     }, e=>console.error(e)));
   }
 
-  if(podeVer('caixa')) unsubscribers.push(col('entradasAvulsas').onSnapshot(snap=>{
-    DB.entradasAvulsas = snap.docs.map(d=>({id:d.id, ...d.data()}));
-    renderOuProteger();
-  }, e=>console.error(e)));
+  if(podeVer('caixa')){
+    unsubscribers.push(col('entradasAvulsas').onSnapshot(snap=>{
+      DB.entradasAvulsas = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      renderOuProteger();
+    }, e=>console.error(e)));
+    unsubscribers.push(col('contasCaixa').onSnapshot(snap=>{
+      DB.contasCaixa = snap.docs.map(d=>({id:d.id, ...d.data()}));
+      renderOuProteger();
+    }, e=>console.error(e)));
+  }
 
   if(podeVer('clientes')) unsubscribers.push(col('clientes').onSnapshot(snap=>{
     DB.clientes = snap.docs.map(d=>({id:d.id, ...d.data()}));
@@ -897,6 +1076,41 @@ function render(){
   else if(currentTab==='clientes') renderClientes(c);
   else if(currentTab==='auditoria') renderAuditoria(c);
   else if(currentTab==='equipe') renderEquipe(c);
+}
+
+/* ==================== CONFIGURAÇÃO VISUAL DOS GRÁFICOS ====================
+   Padrão compartilhado por todos os gráficos (Chart.js) do sistema. Existia um problema visual
+   em vários lugares: com poucos dados (ex: um mês só, um evento só), o Chart.js por padrão estica
+   a barra pra ocupar quase todo o espaço disponível, ficando gigante e esteticamente estranha —
+   era exatamente o caso do gráfico "Evolução Mensal" com um mês só de dado, que também misturava
+   uma barra com uma linha de 1 ponto só (aparecia como um pontinho solto no meio do gráfico, sem
+   nenhuma linha de verdade pra desenhar). Esta seção padroniza espessura máxima de barra e
+   espaçamento entre elas em todo o sistema, e o gráfico de Evolução Mensal passou a mostrar
+   Receita/Despesa/Lucro como três barras (igual ao gráfico de "Comparativo por Tipo de Evento"),
+   em vez de misturar barra com linha — mais consistente e sem o artefato do ponto solto. */
+const CHART_BAR = { maxBarThickness: 46, categoryPercentage: 0.55, barPercentage: 0.82, borderRadius: 5, borderSkipped: false };
+const CHART_BAR_H = { maxBarThickness: 28, categoryPercentage: 0.6, barPercentage: 0.78, borderRadius: 5, borderSkipped: false };
+const CHART_FONT = { family: "'Inter', sans-serif", size: 11.5 };
+function chartOpts(extra){
+  const base = {
+    responsive: true,
+    maintainAspectRatio: false,
+    layout: { padding: { top: 6 } },
+    plugins: {
+      legend: { position:'bottom', labels:{ boxWidth:11, boxHeight:11, padding:14, font:CHART_FONT, color:'#7a6c52' } },
+      tooltip: { backgroundColor:'#33291a', titleFont:CHART_FONT, bodyFont:CHART_FONT, padding:10, cornerRadius:6, boxPadding:4 },
+    },
+    scales: {
+      x: { grid:{ color:'rgba(0,0,0,0.05)', drawTicks:false }, ticks:{ font:CHART_FONT, color:'#7a6c52' }, border:{display:false} },
+      y: { grid:{ color:'rgba(0,0,0,0.05)', drawTicks:false }, ticks:{ font:CHART_FONT, color:'#7a6c52' }, border:{display:false} },
+    },
+  };
+  if(!extra) return base;
+  return {
+    ...base, ...extra,
+    plugins: { ...base.plugins, ...(extra.plugins||{}), legend:{...base.plugins.legend, ...((extra.plugins||{}).legend||{})}, tooltip:{...base.plugins.tooltip, ...((extra.plugins||{}).tooltip||{})} },
+    scales: extra.scales===null ? undefined : { ...base.scales, ...(extra.scales||{}) },
+  };
 }
 
 /* ==================== DASHBOARD GERAL ==================== */
@@ -991,38 +1205,38 @@ function renderDashboardGeral(c){
   charts.tipo = new Chart(document.getElementById('chartTipo'), {
     type:'bar',
     data:{ labels: compData.map(x=>x.tipo), datasets:[
-      {label:'Receita', data: compData.map(x=>x.receita), backgroundColor: ministerioAtual.corGold, borderRadius:4},
-      {label:'Despesa', data: compData.map(x=>x.despesa), backgroundColor:'#C08B6E', borderRadius:4},
-      {label:'Lucro', data: compData.map(x=>x.receita-x.despesa), backgroundColor:'#5C7A4B', borderRadius:4},
+      {label:'Receita', data: compData.map(x=>x.receita), backgroundColor: ministerioAtual.corGold, ...CHART_BAR},
+      {label:'Despesa', data: compData.map(x=>x.despesa), backgroundColor:'#C08B6E', ...CHART_BAR},
+      {label:'Lucro', data: compData.map(x=>x.receita-x.despesa), backgroundColor:'#5C7A4B', ...CHART_BAR},
     ]},
-    options:{ responsive:true, plugins:{legend:{position:'bottom'}} }
+    options: chartOpts()
   });
   if(charts.mensal) charts.mensal.destroy();
   charts.mensal = new Chart(document.getElementById('chartMensal'), {
     type:'bar',
     data:{ labels: monthKeys.map(k=>monthLabel(k+'-01')), datasets:[
-      {type:'bar', label:'Receita', data: monthKeys.map(k=>months[k].receita), backgroundColor:'#E4D6AE', borderRadius:4, order:2},
-      {type:'bar', label:'Despesa', data: monthKeys.map(k=>months[k].despesa), backgroundColor:'#E9CFC2', borderRadius:4, order:2},
-      {type:'line', label:'Lucro', data: monthKeys.map(k=>months[k].receita-months[k].despesa), borderColor:'#5C7A4B', backgroundColor:'#5C7A4B', tension:.3, order:1, yAxisID:'y'},
+      {label:'Receita', data: monthKeys.map(k=>months[k].receita), backgroundColor: ministerioAtual.corGold, ...CHART_BAR},
+      {label:'Despesa', data: monthKeys.map(k=>months[k].despesa), backgroundColor:'#C08B6E', ...CHART_BAR},
+      {label:'Lucro', data: monthKeys.map(k=>months[k].receita-months[k].despesa), backgroundColor:'#5C7A4B', ...CHART_BAR},
     ]},
-    options:{ responsive:true, plugins:{legend:{position:'bottom'}} }
+    options: chartOpts()
   });
   if(charts.eventos) charts.eventos.destroy();
   charts.eventos = new Chart(document.getElementById('chartEventos'), {
     type:'bar',
     data:{ labels: eventoStats.map(e=>e.label), datasets:[
-      {label:'Lucro', data: eventoStats.map(e=>e.lucro), backgroundColor: eventoStats.map(e=>e.lucro>=0?ministerioAtual.corGold:'#A5493A'), borderRadius:4},
+      {label:'Lucro', data: eventoStats.map(e=>e.lucro), backgroundColor: eventoStats.map(e=>e.lucro>=0?ministerioAtual.corGold:'#A5493A'), ...CHART_BAR_H},
     ]},
-    options:{ indexAxis:'y', responsive:true, plugins:{legend:{display:false}} }
+    options: chartOpts({ indexAxis:'y', plugins:{legend:{display:false}} })
   });
   if(charts.itens) charts.itens.destroy();
   const paletaItens = [ministerioAtual.corGold,'#5C7A4B','#A5493A','#8B7B62','#C9A961','#6E8FA3','#B08D3E','#7A5C3E','#4C6B3C','#9C5A4A'];
   charts.itens = new Chart(document.getElementById('chartItens'), {
     type:'bar',
     data:{ labels: ranking.map(r=>r[0]), datasets:[
-      {label:'Valor Vendido', data: ranking.map(r=>r[1].valor), backgroundColor: ranking.map((_,i)=>paletaItens[i%paletaItens.length]), borderRadius:4},
+      {label:'Valor Vendido', data: ranking.map(r=>r[1].valor), backgroundColor: ranking.map((_,i)=>paletaItens[i%paletaItens.length]), ...CHART_BAR_H},
     ]},
-    options:{ indexAxis:'y', responsive:true, plugins:{legend:{display:false}} }
+    options: chartOpts({ indexAxis:'y', plugins:{legend:{display:false}} })
   });
 }
 
@@ -1033,16 +1247,25 @@ function renderDashboardEvento(c){
     c.appendChild(el(`<div class="frame empty-state">Cadastre um evento na aba "Eventos" para ver o dashboard dele aqui.</div>`));
     return;
   }
-  window._selEvento = window._selEvento || opts[0].value;
-  if(!opts.find(o=>o.value===window._selEvento)) window._selEvento = opts[0].value;
+  sincronizarSelecaoEvento(
+    ()=>window._selEvento, v=>{window._selEvento=v;}, ()=>!!window._selEventoTocado, v=>{window._selEventoTocado=v;},
+    opts
+  );
 
   const selWrap = el(`<div class="frame">
     <label>Selecione o Evento</label>
-    <select id="eventoSelect">${opts.map(o=>`<option value="${o.value}" ${o.value===window._selEvento?'selected':''}>${o.label}</option>`).join('')}</select>
+    <select id="eventoSelect">
+      <option value="">— Selecione uma cantina —</option>
+      ${opts.map(o=>`<option value="${o.value}" ${o.value===window._selEvento?'selected':''}>${o.label}</option>`).join('')}
+    </select>
   </div>`);
   c.appendChild(selWrap);
-  selWrap.querySelector('#eventoSelect').addEventListener('change', (e)=>{ window._selEvento = e.target.value; render(); });
+  selWrap.querySelector('#eventoSelect').addEventListener('change', (e)=>{ window._selEvento = e.target.value; window._selEventoTocado = true; render(); });
 
+  if(!window._selEvento){
+    c.appendChild(el(`<div class="frame empty-state">A cantina mais próxima já passou — escolha acima qual evento você quer ver os dados.</div>`));
+    return;
+  }
   const sel = opts.find(o=>o.value===window._selEvento);
   const resev = DB.reservas.filter(r=>r.data===sel.data && r.tipo===sel.tipo);
   const desev = DB.despesas.filter(d=>d.data===sel.data && d.tipo===sel.tipo);
@@ -1052,7 +1275,7 @@ function renderDashboardEvento(c){
   const lucro = totalVendido-totalDespesa;
   const qtdVendidaTotal = resev.reduce((s,r)=>s+r.qtd,0);
   const clientesUnicos = new Set(resev.map(r=>r.cliente.trim().toLowerCase())).size;
-  const ticketMedio = clientesUnicos>0 ? totalVendido/clientesUnicos : 0;
+  const ticketMedio = qtdVendidaTotal>0 ? totalVendido/qtdVendidaTotal : 0;
   const naoPagos = resev.filter(r=>statusPagamento(valorPagoDe(r), valorReserva(r))!=='Sim');
   const saldoPendenteEvento = naoPagos.reduce((s,r)=>s+saldoPendente(r),0);
   const naoEntregues = resev.filter(r=>r.entregue==='Não');
@@ -1157,8 +1380,8 @@ function renderDashboardEvento(c){
   if(charts.horario) charts.horario.destroy();
   charts.horario = new Chart(document.getElementById('chartHorario'), {
     type:'bar',
-    data:{ labels: horData.map(x=>x.h), datasets:[{label:'Valor Vendido (R$)', data: horData.map(x=>x.valor), backgroundColor: ministerioAtual.corGold, borderRadius:4}] },
-    options:{ responsive:true, plugins:{legend:{display:false}} }
+    data:{ labels: horData.map(x=>x.h), datasets:[{label:'Valor Vendido (R$)', data: horData.map(x=>x.valor), backgroundColor: ministerioAtual.corGold, ...CHART_BAR}] },
+    options: chartOpts({ plugins:{legend:{display:false}} })
   });
 }
 
@@ -1375,7 +1598,7 @@ function renderCardapio(c){
   const cardFormState = { faixas: [], opcoes: [], eventosVinculados: [], versoes: [], editingId: null };
   telaSuja = false; // toda vez que a tela é (re)construída do zero, começa "limpa"
 
-  renderGerenciadorCategorias(c, 'categoriasCardapio', DB.categoriasCardapio);
+  renderGerenciadorCategorias(c, 'categoriasCardapio', DB.categoriasCardapio, DB.cardapio, 'cardapio');
 
   if(!podeMexer){
     c.appendChild(el(`<div class="small-note" style="margin-bottom:16px;">Você tem acesso apenas para consulta nesta aba. Fale com um administrador se precisar cadastrar ou alterar itens do cardápio.</div>`));
@@ -1701,16 +1924,29 @@ function renderReservas(c){
   } else if(opts.length===0 || itensAtivos.length===0){
     c.appendChild(el(`<div class="frame empty-state">Cadastre pelo menos um Evento e um Item do Cardápio antes de lançar pedidos.</div>`));
   } else {
+    // Enquanto a pessoa não escolher nada, o campo Evento segue a "cantina atual" (a mais próxima
+    // que ainda não passou). Se não existe nenhuma (todos os eventos já passaram), o campo fica em
+    // branco de propósito — evita lançar sem querer um pedido novo numa cantina antiga só porque
+    // era a que estava selecionada por padrão; a pessoa precisa escolher manualmente.
+    sincronizarSelecaoEvento(
+      ()=>window._reservaFormEvento, v=>{window._reservaFormEvento=v;},
+      ()=>!!window._reservaFormEventoTocado, v=>{window._reservaFormEventoTocado=v;},
+      opts
+    );
     const form = el(`<div class="frame">
       <div class="form-grid">
-        <div><label>Evento</label><select id="f_evento">${eventoOptionsHtml(opts)}</select></div>
+        <div><label>Evento</label><select id="f_evento">
+          <option value="">— Selecione a cantina —</option>
+          ${eventoOptionsHtml(opts, window._reservaFormEvento)}
+        </select></div>
         <div><label>Cliente</label><input type="text" id="f_cliente" list="clientesList" placeholder="Nome do cliente"></div>
         <div><label>Telefone/WhatsApp *</label><input type="text" id="f_telefone" placeholder="(11) 91234-5678"></div>
       </div>
       <datalist id="clientesList">${DB.clientes.map(cl=>`<option value="${escapeHtml(cl.nome)}">`).join('')}</datalist>
       <div class="small-note" id="carrinhoModoNota" style="margin:-8px 0 16px;">Adicione um ou mais itens abaixo — cada item vira um pedido independente, então dá pra marcar Pago/Entregue/Montada separadamente e a cliente pode retirar cada coisa num horário de culto diferente, se o evento tiver mais de um.</div>
+      <div class="frame empty-state" id="escolhaCantinaMsg" style="display:none;">A cantina mais próxima já passou — escolha acima qual evento você quer lançar pedidos.</div>
 
-      <div style="border-top:1px solid var(--line); padding-top:14px;">
+      <div style="border-top:1px solid var(--line); padding-top:14px;" id="itemFormSection">
         <div class="form-grid">
           <div><label>Item</label><select id="f_item"></select></div>
           <div id="f_versaoWrap" style="display:none;"><label>Versão</label><select id="f_versao"></select></div>
@@ -1739,9 +1975,10 @@ function renderReservas(c){
 
       <div id="carrinhoWrap" style="margin-top:16px;"></div>
 
-      <div style="border-top:1px solid var(--line); padding-top:14px; margin-top:16px;">
+      <div style="border-top:1px solid var(--line); padding-top:14px; margin-top:16px;" id="finalizarSection">
         <div class="form-grid">
           <div><label>Forma de Pagamento</label><select id="f_pagto"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
+          <div><label>Conta (opcional)</label><select id="f_contaReserva">${contaOptionsHtml(DB.contasCaixa)}</select></div>
           <div><label>Pago?</label><select id="f_pago"><option>Não</option><option>Parcial</option><option>Sim</option></select></div>
           <div id="f_valorPagoWrap" style="display:none;"><label>Valor já pago (R$)</label><input type="number" step="0.01" min="0" id="f_valorPago" placeholder="Ex: 20"></div>
           <div><label>Entregue?</label><select id="f_entregue"><option>Não</option><option>Sim</option></select></div>
@@ -1785,6 +2022,7 @@ function renderReservas(c){
     clienteInput.addEventListener('input', tentarAutoPreencherTelefone);
     clienteInput.addEventListener('change', tentarAutoPreencherTelefone);
     const pagtoSel = form.querySelector('#f_pagto');
+    const contaReservaSel = form.querySelector('#f_contaReserva');
     const pagoSel = form.querySelector('#f_pago');
     const valorPagoWrap = form.querySelector('#f_valorPagoWrap');
     const valorPagoInput = form.querySelector('#f_valorPago');
@@ -1805,12 +2043,27 @@ function renderReservas(c){
 
     function refreshHorarios(){
       const sel = opts.find(o=>o.value===evSel.value);
-      horSel.innerHTML = (sel.cultos||['-']).map(h=>`<option>${h}</option>`).join('');
+      horSel.innerHTML = ((sel && sel.cultos) || ['-']).map(h=>`<option>${h}</option>`).join('');
     }
     function refreshItemOptions(){
       const sel = opts.find(o=>o.value===evSel.value);
       const disponiveis = itensAtivos.filter(i=> !(i.eventosVinculados||[]).length || (sel && i.eventosVinculados.includes(sel.id)));
       itemSel.innerHTML = disponiveis.length ? disponiveis.map(i=>`<option value="${i.id}">${escapeHtml(i.item)}</option>`).join('') : `<option value="">— Nenhum item vinculado a este evento —</option>`;
+    }
+    // Enquanto nenhuma cantina for escolhida (evSel.value===''), esconde o resto do formulário
+    // (itens, carrinho, finalizar) e mostra só o aviso — evita montar um pedido "no vazio" e evita
+    // que os itens/horários fiquem calculados em cima de um evento que não existe.
+    const itemFormSection = form.querySelector('#itemFormSection');
+    const finalizarSection = form.querySelector('#finalizarSection');
+    const lancadoPorNote = form.querySelector('#lancadoPorNote');
+    const escolhaCantinaMsg = form.querySelector('#escolhaCantinaMsg');
+    function atualizarDisponibilidadeForm(){
+      const temEvento = !!evSel.value;
+      if(itemFormSection) itemFormSection.style.display = temEvento ? '' : 'none';
+      carrinhoWrap.style.display = temEvento ? '' : 'none';
+      if(finalizarSection) finalizarSection.style.display = temEvento ? '' : 'none';
+      if(lancadoPorNote) lancadoPorNote.style.display = temEvento ? '' : 'none';
+      if(escolhaCantinaMsg) escolhaCantinaMsg.style.display = temEvento ? 'none' : '';
     }
     let evSelValorAnterior = evSel.value;
     evSel.addEventListener('change', ()=>{
@@ -1820,9 +2073,13 @@ function renderReservas(c){
         carrinho = [];
       }
       evSelValorAnterior = evSel.value;
-      refreshHorarios(); refreshItemOptions(); refreshVersaoOptions(); refreshOpcoesItem(); refreshPrecoPreview(); renderCarrinho();
+      window._reservaFormEvento = evSel.value;
+      window._reservaFormEventoTocado = true;
+      atualizarDisponibilidadeForm();
+      if(evSel.value){ refreshHorarios(); refreshItemOptions(); refreshVersaoOptions(); refreshOpcoesItem(); refreshPrecoPreview(); renderCarrinho(); }
     });
-    refreshHorarios(); refreshItemOptions();
+    atualizarDisponibilidadeForm();
+    if(evSel.value){ refreshHorarios(); refreshItemOptions(); }
 
     function itemAtual(){ return DB.cardapio.find(i=>i.id===itemSel.value); }
 
@@ -1979,14 +2236,23 @@ function renderReservas(c){
     }
 
     function limparFormReserva(){
-      evSel.selectedIndex = 0; evSelValorAnterior = evSel.value; refreshHorarios(); refreshItemOptions();
+      // Volta a seguir a "cantina atual" (em vez de simplesmente re-selecionar o 1º item da lista,
+      // que agora é o placeholder em branco) — se ainda existir uma cantina atual, o campo já vem
+      // preenchido com ela pro próximo pedido; se não existir mais nenhuma, fica em branco de novo.
+      window._reservaFormEventoTocado = false;
+      sincronizarSelecaoEvento(
+        ()=>window._reservaFormEvento, v=>{window._reservaFormEvento=v;},
+        ()=>!!window._reservaFormEventoTocado, v=>{window._reservaFormEventoTocado=v;},
+        opts
+      );
+      evSel.value = window._reservaFormEvento;
+      evSelValorAnterior = evSel.value; refreshHorarios(); refreshItemOptions(); atualizarDisponibilidadeForm();
       clienteInput.value = ''; telefoneInput.value = '';
       carrinho = [];
       limparCamposItem();
-      pagtoSel.value='Dinheiro'; pagoSel.value='Não'; valorPagoInput.value='0'; atualizarVisibilidadePago(); entregueSel.value='Não';
+      pagtoSel.value='Dinheiro'; contaReservaSel.value=''; pagoSel.value='Não'; valorPagoInput.value='0'; atualizarVisibilidadePago(); entregueSel.value='Não';
       editingReservaId = null;
       formTitle.textContent = 'Nova Reserva / Pedido';
-      form.querySelector('#lancadoPorNote').style.display = '';
       renderCarrinho();
       telaSuja = false; // pedido finalizado ou edição cancelada — não há mais nada em risco de se perder
       render(); // atualiza a tela agora (dados de outras pessoas podem ter ficado represados enquanto o formulário estava "sujo")
@@ -2002,7 +2268,12 @@ function renderReservas(c){
       editingReservaId = r.id;
       telaSuja = true; // começou a editar um pedido existente — protege até salvar ou cancelar
       carrinho = [];
-      evSel.value = eventoKey(r.data, r.tipo); evSelValorAnterior = evSel.value; refreshHorarios(); refreshItemOptions();
+      evSel.value = eventoKey(r.data, r.tipo); evSelValorAnterior = evSel.value;
+      // Editar sempre abre o formulário, mesmo que o evento do pedido já tenha passado — não é um
+      // pedido novo "no vazio", é um pedido que já existe e precisa continuar editável.
+      window._reservaFormEvento = evSel.value; window._reservaFormEventoTocado = true;
+      atualizarDisponibilidadeForm();
+      refreshHorarios(); refreshItemOptions();
       horSel.value = r.horario;
       clienteInput.value = r.cliente;
       telefoneInput.value = contatoDoCliente(r.cliente) || '';
@@ -2020,6 +2291,8 @@ function renderReservas(c){
       ajusteValorInput.value = Math.abs(ajusteValorExistente);
       ajusteMotivoInput.value = r.ajusteMotivo || '';
       pagtoSel.value = r.formaPagamento || 'Dinheiro';
+      contaReservaSel.innerHTML = contaOptionsHtml(DB.contasCaixa, r.conta||'');
+      contaReservaSel.value = r.conta || '';
       pagoSel.value = statusPagamento(valorPagoDe(r), valorReserva(r));
       valorPagoInput.value = valorPagoDe(r);
       atualizarVisibilidadePago();
@@ -2168,6 +2441,7 @@ function renderReservas(c){
           opcoesSelecionadas, opcoesTexto,
           observacao: obsInput.value.trim(),
           formaPagamento: pagtoSel.value,
+          conta: contaReservaSel.value || null,
           pago: pagoSel.value,
           valorPago,
           dataPagamento: proximaDataPagamento(valorPago, valorPagoAntigo, reservaOriginal?reservaOriginal.dataPagamento:null),
@@ -2235,6 +2509,7 @@ function renderReservas(c){
           opcoesSelecionadas: linha.opcoesSelecionadas, opcoesTexto: linha.opcoesTexto,
           observacao: linha.observacao,
           formaPagamento: pagtoSel.value,
+          conta: contaReservaSel.value || null,
           pago: pagoSel.value,
           valorPago,
           dataPagamento: proximaDataPagamento(valorPago, 0, null),
@@ -2253,7 +2528,17 @@ function renderReservas(c){
   }
 
   c.appendChild(el(`<div class="section-title">Pedidos Lançados</div>`));
-  window._filtros = window._filtros || {evento:'', pago:'', entregue:''};
+  window._filtros = window._filtros || {evento:'', pago:'', entregue:'', eventoTocado:false};
+  // Enquanto a pessoa não escolher nada aqui, o filtro segue a "cantina atual" (a mais próxima que
+  // ainda não passou). Quando não existe nenhuma (todos os eventos já passaram), fica em branco de
+  // propósito — mostra um aviso pra escolher, em vez de continuar exibindo pra sempre a última
+  // cantina que já aconteceu. "Todos (histórico completo)" continua disponível como escolha
+  // explícita pra quem quiser ver tudo.
+  sincronizarSelecaoEvento(
+    ()=>window._filtros.evento, v=>{window._filtros.evento=v;},
+    ()=>!!window._filtros.eventoTocado, v=>{window._filtros.eventoTocado=v;},
+    opts, ['__todos']
+  );
   window._reservaSort = window._reservaSort || {key:'data', dir:'desc'};
   const SORT_OPCOES = [
     {key:'data', label:'Data'}, {key:'cliente', label:'Cliente'}, {key:'item', label:'Item'},
@@ -2261,21 +2546,29 @@ function renderReservas(c){
     {key:'entregue', label:'Entregue'}, {key:'montada', label:'Montada'}, {key:'vendedor', label:'Lançado por'},
   ];
   const filterWrap = el(`<div class="filters-row">
-    <div><label>Evento</label><select id="filtEvento"><option value="">Todos</option>${eventoOptionsHtml(opts, window._filtros.evento)}</select></div>
+    <div><label>Evento</label><select id="filtEvento">
+      <option value="">— Selecione uma cantina —</option>
+      ${eventoOptionsHtml(opts, window._filtros.evento)}
+      <option value="__todos" ${window._filtros.evento==='__todos'?'selected':''}>Todos (histórico completo)</option>
+    </select></div>
     <div><label>Pago?</label><select id="filtPago"><option value="">Todos</option><option ${window._filtros.pago==='Sim'?'selected':''}>Sim</option><option ${window._filtros.pago==='Parcial'?'selected':''}>Parcial</option><option ${window._filtros.pago==='Não'?'selected':''}>Não</option></select></div>
     <div><label>Entregue?</label><select id="filtEntregue"><option value="">Todos</option><option ${window._filtros.entregue==='Sim'?'selected':''}>Sim</option><option ${window._filtros.entregue==='Não'?'selected':''}>Não</option></select></div>
     <div><label>Ordenar por</label><select id="ordCampo">${SORT_OPCOES.map(o=>`<option value="${o.key}" ${window._reservaSort.key===o.key?'selected':''}>${o.label}</option>`).join('')}</select></div>
     <div><label>Direção</label><select id="ordDir"><option value="asc" ${window._reservaSort.dir==='asc'?'selected':''}>▲ Crescente</option><option value="desc" ${window._reservaSort.dir==='desc'?'selected':''}>▼ Decrescente</option></select></div>
   </div>`);
   c.appendChild(filterWrap);
-  filterWrap.querySelector('#filtEvento').addEventListener('change', e=>{ window._filtros.evento=e.target.value; render(); });
+  filterWrap.querySelector('#filtEvento').addEventListener('change', e=>{ window._filtros.evento=e.target.value; window._filtros.eventoTocado=true; render(); });
   filterWrap.querySelector('#filtPago').addEventListener('change', e=>{ window._filtros.pago=e.target.value; render(); });
   filterWrap.querySelector('#filtEntregue').addEventListener('change', e=>{ window._filtros.entregue=e.target.value; render(); });
   filterWrap.querySelector('#ordCampo').addEventListener('change', e=>{ window._reservaSort.key=e.target.value; render(); });
   filterWrap.querySelector('#ordDir').addEventListener('change', e=>{ window._reservaSort.dir=e.target.value; render(); });
 
-  let list = [...DB.reservas];
-  if(window._filtros.evento){ const [d,t]=window._filtros.evento.split('|'); list = list.filter(r=>r.data===d && r.tipo===t); }
+  let list = [];
+  if(window._filtros.evento==='__todos'){
+    list = [...DB.reservas];
+  } else if(window._filtros.evento){
+    const [d,t]=window._filtros.evento.split('|'); list = DB.reservas.filter(r=>r.data===d && r.tipo===t);
+  }
   if(window._filtros.pago){ list = list.filter(r=>r.pago===window._filtros.pago); }
   if(window._filtros.entregue){ list = list.filter(r=>r.entregue===window._filtros.entregue); }
 
@@ -2346,7 +2639,7 @@ function renderReservas(c){
 
   // se o evento filtrado tiver mais de um horário, separa visualmente os pedidos (com e sem particularidade) em colunas por horário
   let horariosDoEventoFiltrado = null;
-  if(window._filtros.evento){
+  if(window._filtros.evento && window._filtros.evento!=='__todos'){
     const [d,t] = window._filtros.evento.split('|');
     const evObj = DB.eventos.find(e=>e.data===d && e.tipo===t);
     if(evObj && (evObj.cultos||[]).length>1) horariosDoEventoFiltrado = evObj.cultos;
@@ -2380,7 +2673,10 @@ function renderReservas(c){
   if(comParticularidade.length || semParticularidade.length){
     groupContainer.appendChild(el(`<div class="section-title" style="margin-top:20px;">Demais Pedidos</div>`));
   }
-  groupContainer.appendChild(montarBlocoPorHorario(semParticularidade, 'Nenhum pedido encontrado'));
+  const textoVazioLista = window._filtros.evento
+    ? 'Nenhum pedido encontrado'
+    : 'A cantina mais próxima já passou — escolha acima qual evento você quer ver (ou "Todos" pra ver o histórico completo).';
+  groupContainer.appendChild(montarBlocoPorHorario(semParticularidade, textoVazioLista));
   c.appendChild(groupContainer);
   const tableWrap = groupContainer;
 
@@ -2462,7 +2758,7 @@ function renderDespesas(c){
   const SEM_EVENTO = '__avulsa';
   telaSuja = false; // toda vez que a tela é (re)construída do zero, começa "limpa"
 
-  renderGerenciadorCategorias(c, 'categoriasDespesas', DB.categoriasDespesas);
+  renderGerenciadorCategorias(c, 'categoriasDespesas', DB.categoriasDespesas, DB.despesas, 'despesas');
 
   c.appendChild(el(`<div class="section-title" id="despesaFormTitle" style="${podeMexerForm?'':'display:none;'}">Nova Despesa</div>`));
   const formTitle = c.querySelector('#despesaFormTitle');
@@ -2480,6 +2776,7 @@ function renderDespesas(c){
         <div id="f_unidadeOutraWrap" style="display:none;"><label>Qual unidade?</label><input type="text" id="f_unidadeOutra" placeholder="Ex: bandeja"></div>
         <div><label>Preço Unitário (R$, opcional)</label><input type="number" step="0.01" min="0" id="f_precoUnit" placeholder="Ex: 3,50"></div>
         <div><label>Valor Total (R$)</label><input type="number" step="0.01" id="f_valor"></div>
+        <div><label>Conta (opcional)</label><select id="f_contaDespesa">${contaOptionsHtml(DB.contasCaixa)}</select></div>
       </div>
       <div class="small-note" style="margin-top:-10px; margin-bottom:12px;">Use "Sem evento" pra saídas que não são de uma cantina específica (ex: uma conta geral do ministério). Preenchendo Quantidade e Preço Unitário, o Valor Total é calculado sozinho (Qtd × Preço Unit.) — mas você ainda pode digitar o Valor Total direto, sem preço unitário, pra gastos sem uma unidade clara (ex: conta de luz).</div>
       <button class="btn" id="btnAdd">+ Adicionar Despesa</button>
@@ -2500,6 +2797,7 @@ function renderDespesas(c){
     const unidadeOutraInput = form.querySelector('#f_unidadeOutra');
     const precoUnitInput = form.querySelector('#f_precoUnit');
     const valorInput = form.querySelector('#f_valor');
+    const contaSel = form.querySelector('#f_contaDespesa');
     const btnAdd = form.querySelector('#btnAdd');
     const btnCancelEditDespesa = form.querySelector('#btnCancelEditDespesa');
 
@@ -2526,7 +2824,7 @@ function renderDespesas(c){
     function limparFormDespesa(){
       evSel.value = opts.length ? opts[0].value : SEM_EVENTO; atualizarVisibilidadeEvento();
       dataAvulsaInput.value = hojeStr();
-      descInput.value=''; catSel.value=''; qtdInput.value=''; precoUnitInput.value=''; valorInput.value='';
+      descInput.value=''; catSel.value=''; qtdInput.value=''; precoUnitInput.value=''; valorInput.value=''; contaSel.value='';
       unidadeSel.value = UNIDADES_PADRAO[0]; unidadeOutraWrap.style.display='none'; unidadeOutraInput.value='';
       editingDespesaId = null;
       formTitle.textContent = 'Nova Despesa';
@@ -2554,6 +2852,8 @@ function renderDespesas(c){
       }
       precoUnitInput.value = (d.precoUnitario===null||d.precoUnitario===undefined) ? '' : d.precoUnitario;
       valorInput.value = d.valor;
+      contaSel.innerHTML = contaOptionsHtml(DB.contasCaixa, d.conta||'');
+      contaSel.value = d.conta || '';
       formTitle.textContent = `Editar Despesa — ${d.descricao}`;
       btnAdd.textContent = 'Salvar Alterações';
       btnCancelEditDespesa.style.display = 'inline-block';
@@ -2572,6 +2872,7 @@ function renderDespesas(c){
       const unidade = unidadeSel.value==='__outra' ? unidadeOutraInput.value.trim() : unidadeSel.value;
       const precoUnitRaw = precoUnitInput.value.trim();
       const precoUnitario = precoUnitRaw==='' ? null : parseFloat(precoUnitRaw);
+      const conta = contaSel.value || null;
       if(!descricao || isNaN(valor)){ alert('Preencha descrição e valor.'); return; }
       if(semEvento && !dataAvulsaInput.value){ alert('Preencha a data desta saída.'); return; }
       if(!semEvento && !sel){ alert('Selecione um evento (ou "Sem evento").'); return; }
@@ -2581,6 +2882,7 @@ function renderDespesas(c){
         tipo: semEvento ? null : sel.tipo,
         descricao, categoria, valor, quantidade, unidade: quantidade!==null ? unidade : null,
         precoUnitario: (quantidade!==null && precoUnitario!==null && !isNaN(precoUnitario)) ? precoUnitario : null,
+        conta,
       };
 
       if(editingDespesaId){
@@ -2695,14 +2997,14 @@ function construirMovimentosCaixa(){
       data: dataEntradaReserva(r), tipoMov:'entrada', origem:'venda',
       descricao: `${r.cliente} — ${r.item}${r.pago==='Parcial'?' (parcial)':''}`,
       categoriaEvento: r.tipo ? `${fmtDateBR(r.data)} — ${r.tipo}` : '—',
-      valor: valorPagoDe(r), idOrigem: r.id,
+      valor: valorPagoDe(r), idOrigem: r.id, conta: r.conta || null,
     });
   });
   DB.entradasAvulsas.forEach(e=>{
     movs.push({
       data: e.data, tipoMov:'entrada', origem:'avulsa',
       descricao: e.descricao, categoriaEvento: e.categoria || '—',
-      valor: Number(e.valor), idOrigem: e.id,
+      valor: Number(e.valor), idOrigem: e.id, conta: e.conta || null,
     });
   });
   DB.despesas.forEach(d=>{
@@ -2710,7 +3012,7 @@ function construirMovimentosCaixa(){
       data: d.data, tipoMov:'saida', origem: d.tipo ? 'evento' : 'avulsa',
       descricao: d.descricao,
       categoriaEvento: d.tipo ? `${fmtDateBR(d.data)} — ${d.tipo}` : (d.categoria || 'Geral'),
-      valor: Number(d.valor), idOrigem: d.id,
+      valor: Number(d.valor), idOrigem: d.id, conta: d.conta || null,
     });
   });
   movs.sort((a,b)=> a.data===b.data ? 0 : (a.data<b.data?-1:1));
@@ -2718,12 +3020,27 @@ function construirMovimentosCaixa(){
   movs.forEach(m=>{ saldo += (m.tipoMov==='entrada'? m.valor : -m.valor); m.saldoAcumulado = saldo; });
   return movs;
 }
+/* Saldo por conta (ex: "Espécie" R$200 / "Conta do Banco" R$300) — soma as mesmas movimentações de
+   construirMovimentosCaixa(), só que agrupadas por conta em vez de listadas em ordem cronológica.
+   Lançamentos sem conta definida (feitos antes dessa opção existir, ou deixados em branco de
+   propósito) entram no grupo "Sem conta definida" — nada se perde, só fica sem essa quebra extra. */
+function calcularSaldoPorConta(movs){
+  const porConta = {};
+  movs.forEach(m=>{
+    const chave = m.conta || '__semconta';
+    porConta[chave] = porConta[chave] || { conta: m.conta || 'Sem conta definida', entradas:0, saidas:0 };
+    if(m.tipoMov==='entrada') porConta[chave].entradas += m.valor; else porConta[chave].saidas += m.valor;
+  });
+  return Object.values(porConta).map(x=>({...x, saldo: x.entradas-x.saidas})).sort((a,b)=>b.saldo-a.saldo);
+}
 
 function renderCaixa(c){
   const perm = { criar: podeCriar('caixa'), excluir: podeExcluir('caixa') };
   const resumo = calcularResumoCaixa();
   const movs = construirMovimentosCaixa();
   telaSuja = false; // toda vez que a tela é (re)construída do zero, começa "limpa"
+
+  renderGerenciadorContas(c);
 
   c.appendChild(el(`<div class="section-title">Resumo do Caixa</div>`));
   c.appendChild(el(`<div class="frame"><div class="kpi-grid">
@@ -2744,6 +3061,7 @@ function renderCaixa(c){
         <div><label>Descrição</label><input type="text" id="f_descEntrada" placeholder="Ex: Doação da Família Silva"></div>
         <div><label>Categoria (opcional)</label><input type="text" id="f_catEntrada" placeholder="Ex: Doação"></div>
         <div><label>Valor (R$)</label><input type="number" step="0.01" id="f_valorEntrada"></div>
+        <div><label>Conta (opcional)</label><select id="f_contaEntrada">${contaOptionsHtml(DB.contasCaixa)}</select></div>
       </div>
       <button class="btn" id="btnAddEntrada">+ Adicionar Entrada</button>
     </div>`);
@@ -2755,10 +3073,11 @@ function renderCaixa(c){
       const descricao = form.querySelector('#f_descEntrada').value.trim();
       const categoria = form.querySelector('#f_catEntrada').value.trim();
       const valor = parseFloat(form.querySelector('#f_valorEntrada').value);
+      const conta = form.querySelector('#f_contaEntrada').value || null;
       if(!data || !descricao || isNaN(valor)){ alert('Preencha data, descrição e valor.'); return; }
-      await col('entradasAvulsas').add({ data, descricao, categoria, valor, lancadoPor: userName() });
+      await col('entradasAvulsas').add({ data, descricao, categoria, valor, conta, lancadoPor: userName() });
       await auditLog('Criou', 'entradasAvulsas', `Entrada avulsa "${descricao}" (${fmtMoney(valor)}) em ${fmtDateBR(data)}`);
-      form.querySelector('#f_descEntrada').value=''; form.querySelector('#f_catEntrada').value=''; form.querySelector('#f_valorEntrada').value='';
+      form.querySelector('#f_descEntrada').value=''; form.querySelector('#f_catEntrada').value=''; form.querySelector('#f_valorEntrada').value=''; form.querySelector('#f_contaEntrada').value='';
       telaSuja = false;
       render();
     });
@@ -2804,6 +3123,18 @@ function renderCaixa(c){
   </table></div></div>`));
   c.appendChild(two2c);
 
+  // Só mostra a quebra por conta se pelo menos uma conta já foi cadastrada — quem não usa esse
+  // recurso não precisa ver uma tabela vazia/irrelevante no meio do Caixa.
+  if(DB.contasCaixa.length){
+    const saldoPorConta = calcularSaldoPorConta(movs);
+    c.appendChild(el(`<div class="section-title">Saldo por Conta</div>`));
+    c.appendChild(el(`<div class="small-note" style="margin-top:-8px;">Mesmas movimentações do caixa, só que separadas por onde o dinheiro está (ex: Espécie, Conta do Banco) — cada lançamento entra na conta escolhida na hora de registrar. Lançamentos sem conta escolhida aparecem em "Sem conta definida".</div>`));
+    c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+      <thead><tr><th>Conta</th><th>Entradas</th><th>Saídas</th><th>Saldo</th></tr></thead>
+      <tbody>${saldoPorConta.map(x=>`<tr><td>${escapeHtml(x.conta)}</td><td style="color:var(--ok);">${fmtMoney(x.entradas)}</td><td style="color:var(--warn);">${fmtMoney(x.saidas)}</td><td><strong>${fmtMoney(x.saldo)}</strong></td></tr>`).join('')}</tbody>
+    </table></div></div>`));
+  }
+
   c.appendChild(el(`<div class="section-title">Extrato de Movimentações</div>`));
   window._filtrosCaixa = window._filtrosCaixa || {de:'', ate:''};
   const filterWrap = el(`<div class="filters-row">
@@ -2822,16 +3153,17 @@ function renderCaixa(c){
   const movsOrdenados = [...movsFiltrados].sort((a,b)=> a.data===b.data?0:(a.data<b.data?1:-1));
 
   const tableWrap = el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
-    <thead><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th>Categoria/Evento</th><th>Valor</th><th>Saldo Acumulado</th><th></th></tr></thead>
+    <thead><tr><th>Data</th><th>Tipo</th><th>Descrição</th><th>Categoria/Evento</th><th>Conta</th><th>Valor</th><th>Saldo Acumulado</th><th></th></tr></thead>
     <tbody>${movsOrdenados.length? movsOrdenados.map(m=>`<tr>
       <td>${fmtDateBR(m.data)}</td>
       <td><span class="badge ${m.tipoMov==='entrada'?'sim':'nao'}">${m.tipoMov==='entrada'?'Entrada':'Saída'}</span></td>
       <td>${escapeHtml(m.descricao)}</td>
       <td>${escapeHtml(m.categoriaEvento)}</td>
+      <td>${m.conta ? escapeHtml(m.conta) : '—'}</td>
       <td style="color:${m.tipoMov==='entrada'?'var(--ok)':'var(--warn)'}">${m.tipoMov==='entrada'?'+':'-'} ${fmtMoney(m.valor)}</td>
       <td>${fmtMoney(m.saldoAcumulado)}</td>
       <td>${m.origem==='avulsa' && m.tipoMov==='entrada' && perm.excluir ? `<button class="btn danger small" data-delentrada="${m.idOrigem}">Excluir</button>` : ''}</td>
-    </tr>`).join('') : '<tr><td colspan="7" class="empty-state">Nenhuma movimentação no período selecionado</td></tr>'}</tbody>
+    </tr>`).join('') : '<tr><td colspan="8" class="empty-state">Nenhuma movimentação no período selecionado</td></tr>'}</tbody>
   </table></div></div>`);
   c.appendChild(tableWrap);
   tableWrap.querySelectorAll('[data-delentrada]').forEach(btn=>btn.addEventListener('click', async ()=>{
@@ -2846,31 +3178,31 @@ function renderCaixa(c){
   charts.saldoCaixa = new Chart(document.getElementById('chartSaldoCaixa'), {
     type:'line',
     data:{ labels: monthKeysCaixa.map(k=>monthLabel(k+'-01')), datasets:[
-      {label:'Saldo Acumulado', data: saldoPorMes, borderColor: ministerioAtual.corGold, backgroundColor: ministerioAtual.corGold, tension:.3, fill:false},
+      {label:'Saldo Acumulado', data: saldoPorMes, borderColor: ministerioAtual.corGold, backgroundColor: ministerioAtual.corGold+'33', tension:.3, fill:true, pointRadius:4, pointHoverRadius:6, pointBackgroundColor: ministerioAtual.corGold},
     ]},
-    options:{ responsive:true, plugins:{legend:{display:false}} }
+    options: chartOpts({ plugins:{legend:{display:false}} })
   });
   if(charts.entradaSaida) charts.entradaSaida.destroy();
   charts.entradaSaida = new Chart(document.getElementById('chartEntradaSaida'), {
     type:'bar',
     data:{ labels: monthKeysCaixa.map(k=>monthLabel(k+'-01')), datasets:[
-      {label:'Entradas', data: monthKeysCaixa.map(k=>monthsCaixa[k].entrada), backgroundColor: ministerioAtual.corGold, borderRadius:4},
-      {label:'Saídas', data: monthKeysCaixa.map(k=>monthsCaixa[k].saida), backgroundColor:'#A5493A', borderRadius:4},
+      {label:'Entradas', data: monthKeysCaixa.map(k=>monthsCaixa[k].entrada), backgroundColor: ministerioAtual.corGold, ...CHART_BAR},
+      {label:'Saídas', data: monthKeysCaixa.map(k=>monthsCaixa[k].saida), backgroundColor:'#A5493A', ...CHART_BAR},
     ]},
-    options:{ responsive:true, plugins:{legend:{position:'bottom'}} }
+    options: chartOpts()
   });
   if(charts.saidaCategoria) charts.saidaCategoria.destroy();
   const paletaCat = [ministerioAtual.corGold,'#5C7A4B','#A5493A','#8B7B62','#C9A961','#6E8FA3','#B08D3E','#7A5C3E','#4C6B3C','#9C5A4A'];
   charts.saidaCategoria = new Chart(document.getElementById('chartSaidaCategoria'), {
     type:'doughnut',
-    data:{ labels: catEntries.map(e=>e[0]), datasets:[{ data: catEntries.map(e=>e[1]), backgroundColor: catEntries.map((_,i)=>paletaCat[i%paletaCat.length]) }] },
-    options:{ responsive:true, plugins:{legend:{position:'bottom'}} }
+    data:{ labels: catEntries.map(e=>e[0]), datasets:[{ data: catEntries.map(e=>e[1]), backgroundColor: catEntries.map((_,i)=>paletaCat[i%paletaCat.length]), borderColor:'#fff', borderWidth:2, hoverOffset:6 }] },
+    options: chartOpts({ scales:null, cutout:'62%' })
   });
   if(charts.entradaEvento) charts.entradaEvento.destroy();
   charts.entradaEvento = new Chart(document.getElementById('chartEntradaEvento'), {
     type:'bar',
-    data:{ labels: eventoEntries.map(e=>e.label), datasets:[{label:'Total Recebido', data: eventoEntries.map(e=>e.total), backgroundColor: ministerioAtual.corGold, borderRadius:4}] },
-    options:{ indexAxis:'y', responsive:true, plugins:{legend:{display:false}} }
+    data:{ labels: eventoEntries.map(e=>e.label), datasets:[{label:'Total Recebido', data: eventoEntries.map(e=>e.total), backgroundColor: ministerioAtual.corGold, ...CHART_BAR_H}] },
+    options: chartOpts({ indexAxis:'y', plugins:{legend:{display:false}} })
   });
 }
 
