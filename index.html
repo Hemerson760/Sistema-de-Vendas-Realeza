@@ -349,6 +349,60 @@ function podeEditar(area, acao){ return temPermissao(area, acao || 'editar'); }
 
 /* ==================== HELPERS ==================== */
 const fmtMoney = (n) => 'R$ ' + (Number(n)||0).toLocaleString('pt-BR',{minimumFractionDigits:2, maximumFractionDigits:2});
+
+/* ==================== MÁSCARA DE VALOR EM REAIS (R$) ====================
+   Todo campo de dinheiro do sistema (Preço, Valor Total, Valor Pago, Valor do Ajuste etc.)
+   usa essa máscara em vez do spinner nativo de número — a pessoa digita só os números, de
+   trás pra frente, como numa calculadora/maquininha de cartão, e o campo separa sozinho reais
+   e centavos, sem precisar digitar vírgula nem ponto (elimina o erro clássico de digitar
+   "1000" pensando em R$10,00 e o campo entender R$1.000,00, ou vice-versa). */
+function formatMoneyDisplay(centavos){
+  return ((Number(centavos)||0)/100).toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function moneyDisplayFromValor(valorReais){
+  return formatMoneyDisplay(Math.round((Number(valorReais)||0)*100));
+}
+/* Usado direto por campos de dinheiro dentro de listas redesenhadas por template (faixas de
+   preço, versões) — o "estado de verdade" fica num array em memória, não no dataset do input. */
+function parseMoneyDigits(str){
+  const digitos = (str||'').replace(/\D/g,'');
+  const centavos = digitos===''? 0 : parseInt(digitos,10);
+  return { valor: centavos/100, display: digitos===''? '' : formatMoneyDisplay(centavos) };
+}
+/* Liga a máscara num <input> de dinheiro isolado (fora de listas redesenhadas por template) —
+   guarda o valor numérico "de verdade" em dataset.valor (lido por moneyVal(), escrito por
+   setMoneyVal()/clearMoneyVal()); o resto do sistema nunca lê o .value bruto desses campos.
+   Idempotente: religar no mesmo campo (ex: depois de recriar o formulário) não duplica o listener. */
+function attachMoneyMask(input){
+  if(!input || input.dataset.moneyMask) return;
+  input.dataset.moneyMask = '1';
+  // Se o campo já chegou com um valor formatado (ex: veio pronto de um template, como o de
+  // pagamento parcial nos cards de Pedidos Lançados), interpreta esse texto como valor inicial
+  // em vez de assumir zero — sem isso, moneyVal() ficaria errado até a pessoa digitar algo.
+  if(input.dataset.valor===undefined){ input.dataset.valor = String(parseMoneyDigits(input.value).valor); }
+  input.setAttribute('inputmode','numeric');
+  input.setAttribute('autocomplete','off');
+  input.addEventListener('input', ()=>{
+    const {valor, display} = parseMoneyDigits(input.value);
+    input.dataset.valor = String(valor);
+    input.value = display;
+  });
+  input.addEventListener('focus', ()=>{ input.select(); });
+}
+function moneyVal(input){ return input ? (parseFloat(input.dataset.valor)||0) : 0; }
+function setMoneyVal(input, numero){
+  if(!input) return;
+  attachMoneyMask(input);
+  const n = Number(numero)||0;
+  input.dataset.valor = String(n);
+  input.value = moneyDisplayFromValor(n);
+}
+function clearMoneyVal(input){
+  if(!input) return;
+  attachMoneyMask(input);
+  input.dataset.valor = '0';
+  input.value = '';
+}
 function valorReserva(r){ return (r.valorTotal !== undefined && r.valorTotal !== null) ? Number(r.valorTotal) : (Number(r.qtd)||0)*(Number(r.precoUnit)||0); }
 const fmtDateBR = (iso) => { if(!iso) return ''; const [y,m,d]=iso.split('-'); return `${d}/${m}/${y}`; };
 const monthLabel = (iso) => { const [y,m] = iso.split('-'); const meses=['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez']; return meses[parseInt(m,10)-1] + '/' + y; };
@@ -1149,6 +1203,18 @@ function renderDashboardGeral(c){
     <div class="kpi ${resumoCaixa.saldo>=0?'ok':'warn'}"><div class="label">Caixa Atual</div><div class="value">${fmtMoney(resumoCaixa.saldo)}</div></div>
   </div></div>`));
 
+  c.appendChild(el(`<div class="section-title">Pendências de Pagamento — Todas as Cantinas</div>`));
+  c.appendChild(el(`<div class="small-note" style="margin-bottom:10px;">Quem ainda deve, separado por evento/data, pra saber rapidinho quem cobrar e de qual cantina. Mesmos pedidos que entram no KPI "Saldo Pendente" acima, só que aqui dá pra ver nome, evento e valor de cada um.</div>`));
+  const pendentesOrdenados = [...pendentesPagamento].sort((a,b)=>{
+    if(a.data!==b.data) return a.data<b.data ? 1 : -1; // evento mais recente primeiro
+    if(a.tipo!==b.tipo) return String(a.tipo).localeCompare(String(b.tipo));
+    return a.cliente.localeCompare(b.cliente);
+  });
+  c.appendChild(el(`<div class="frame" style="padding:0;"><div class="table-wrap"><table>
+    <thead><tr><th>Evento</th><th>Falta Pagar</th><th>Item</th><th>Status</th><th>Saldo Pendente</th></tr></thead>
+    <tbody>${pendentesOrdenados.length? pendentesOrdenados.map(r=>`<tr><td>${fmtDateBR(r.data)} — ${escapeHtml(r.tipo||'')}</td><td>${escapeHtml(r.cliente)}</td><td>${escapeHtml(r.item)}${r.versao?` — ${escapeHtml(r.versao)}`:''}</td><td><span class="badge ${r.pago==='Parcial'?'parcial':'nao'}">${r.pago==='Parcial'?'Parcial':'Não pago'}</span></td><td>${fmtMoney(saldoPendente(r))}</td></tr>`).join('') : '<tr><td colspan="5" class="empty-state">Ninguém devendo — tudo pago! 🎉</td></tr>'}</tbody>
+  </table></div></div>`));
+
   c.appendChild(el(`<div class="section-title">Comparativo por Tipo de Evento</div>`));
   const tipos = [...new Set(DB.eventos.map(e=>e.tipo).filter(Boolean))].sort();
   const compData = tipos.map(t=>({
@@ -1271,6 +1337,7 @@ function renderDashboardEvento(c){
   const desev = DB.despesas.filter(d=>d.data===sel.data && d.tipo===sel.tipo);
 
   const totalVendido = resev.reduce((s,r)=>s+valorReserva(r),0);
+  const totalRecebido = resev.reduce((s,r)=>s+valorPagoDe(r),0);
   const totalDespesa = desev.reduce((s,d)=>s+Number(d.valor),0);
   const lucro = totalVendido-totalDespesa;
   const qtdVendidaTotal = resev.reduce((s,r)=>s+r.qtd,0);
@@ -1283,6 +1350,7 @@ function renderDashboardEvento(c){
   c.appendChild(el(`<div class="section-title">Resumo do Dia — ${sel.label}</div>`));
   c.appendChild(el(`<div class="frame"><div class="kpi-grid">
     <div class="kpi ok"><div class="label">Total Vendido</div><div class="value">${fmtMoney(totalVendido)}</div></div>
+    <div class="kpi ok"><div class="label">Total Recebido</div><div class="value">${fmtMoney(totalRecebido)}</div></div>
     <div class="kpi"><div class="label">Qtd. Vendida</div><div class="value">${qtdVendidaTotal}</div></div>
     <div class="kpi"><div class="label">Despesas</div><div class="value">${fmtMoney(totalDespesa)}</div></div>
     <div class="kpi ${lucro>=0?'ok':'warn'}"><div class="label">Lucro do Dia</div><div class="value">${fmtMoney(lucro)}</div></div>
@@ -1608,7 +1676,7 @@ function renderCardapio(c){
     <div class="form-grid">
       <div><label>Item</label><input type="text" id="f_item" placeholder="Ex: Pastel de Carne"></div>
       <div><label>Categoria</label><select id="f_cat">${categoriaOptionsHtml(DB.categoriasCardapio)}</select></div>
-      <div id="f_precoWrap"><label>Preço 1 unidade (R$)</label><input type="number" step="0.01" id="f_preco"></div>
+      <div id="f_precoWrap"><label>Preço 1 unidade (R$)</label><input type="text" id="f_preco" placeholder="R$ 0,00"></div>
       <div><label>Ativo</label><select id="f_ativo"><option value="true">Sim</option><option value="false">Não</option></select></div>
       <div id="f_limiteWrap"><label>Limite por evento (opcional)</label><input type="number" min="0" id="f_limite" placeholder="Ex: 100"></div>
     </div>
@@ -1663,7 +1731,7 @@ function renderCardapio(c){
         <span class="small-note" style="margin:0;">Comprando</span>
         <input type="number" min="2" value="${f.qtdBloco}" data-faixa-qtd="${i}" style="width:90px;" placeholder="Qtd">
         <span class="small-note" style="margin:0;">unidades juntas, custa</span>
-        <input type="number" step="0.01" value="${f.precoBloco}" data-faixa-preco="${i}" style="width:110px;" placeholder="R$ total">
+        <input type="text" inputmode="numeric" value="${moneyDisplayFromValor(f.precoBloco)}" data-faixa-preco="${i}" style="width:110px;" placeholder="R$ 0,00">
         <span class="small-note" style="margin:0;">no total · válido até</span>
         <input type="date" value="${f.validoAte||''}" data-faixa-validade="${i}" style="width:150px;">
         <button type="button" class="btn danger small" data-faixa-del="${i}">Remover</button>
@@ -1671,7 +1739,11 @@ function renderCardapio(c){
   }
   faixasListEl.addEventListener('input', e=>{
     if(e.target.dataset.faixaQtd!==undefined){ cardFormState.faixas[e.target.dataset.faixaQtd].qtdBloco = parseFloat(e.target.value)||0; }
-    if(e.target.dataset.faixaPreco!==undefined){ cardFormState.faixas[e.target.dataset.faixaPreco].precoBloco = parseFloat(e.target.value)||0; }
+    if(e.target.dataset.faixaPreco!==undefined){
+      const {valor, display} = parseMoneyDigits(e.target.value);
+      cardFormState.faixas[e.target.dataset.faixaPreco].precoBloco = valor;
+      e.target.value = display;
+    }
     if(e.target.dataset.faixaValidade!==undefined){ cardFormState.faixas[e.target.dataset.faixaValidade].validoAte = e.target.value || null; }
   });
   faixasListEl.addEventListener('click', e=>{
@@ -1687,6 +1759,8 @@ function renderCardapio(c){
   const versoesWrap = form.querySelector('#versoesWrap');
   const temVersoesChk = form.querySelector('#f_temVersoes');
   const precoWrap = form.querySelector('#f_precoWrap');
+  const precoInput = form.querySelector('#f_preco');
+  attachMoneyMask(precoInput);
   const limiteWrap = form.querySelector('#f_limiteWrap');
   const limiteNota = form.querySelector('#f_limiteNota');
 
@@ -1695,7 +1769,7 @@ function renderCardapio(c){
       <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
         <input type="text" value="${escapeHtml(v.nome)}" data-versao-nome="${i}" style="width:160px;" placeholder="Ex: Grande">
         <span class="small-note" style="margin:0;">preço</span>
-        <input type="number" step="0.01" min="0" value="${v.preco}" data-versao-preco="${i}" style="width:100px;" placeholder="R$">
+        <input type="text" inputmode="numeric" value="${moneyDisplayFromValor(v.preco)}" data-versao-preco="${i}" style="width:100px;" placeholder="R$ 0,00">
         <span class="small-note" style="margin:0;">limite/evento (opcional)</span>
         <input type="number" min="0" value="${v.limite===null||v.limite===undefined?'':v.limite}" data-versao-limite="${i}" style="width:110px;" placeholder="Ex: 30">
         <button type="button" class="btn danger small" data-versao-del="${i}">Remover</button>
@@ -1703,7 +1777,11 @@ function renderCardapio(c){
   }
   versoesListEl.addEventListener('input', e=>{
     if(e.target.dataset.versaoNome!==undefined){ cardFormState.versoes[e.target.dataset.versaoNome].nome = e.target.value; }
-    if(e.target.dataset.versaoPreco!==undefined){ cardFormState.versoes[e.target.dataset.versaoPreco].preco = parseFloat(e.target.value)||0; }
+    if(e.target.dataset.versaoPreco!==undefined){
+      const {valor, display} = parseMoneyDigits(e.target.value);
+      cardFormState.versoes[e.target.dataset.versaoPreco].preco = valor;
+      e.target.value = display;
+    }
     if(e.target.dataset.versaoLimite!==undefined){ const raw=e.target.value.trim(); cardFormState.versoes[e.target.dataset.versaoLimite].limite = raw===''?null:parseInt(raw,10); }
   });
   versoesListEl.addEventListener('click', e=>{
@@ -1777,7 +1855,7 @@ function renderCardapio(c){
 
   function limparForm(){
     form.querySelector('#f_item').value=''; form.querySelector('#f_cat').value='';
-    form.querySelector('#f_preco').value=''; form.querySelector('#f_ativo').value='true';
+    clearMoneyVal(precoInput); form.querySelector('#f_ativo').value='true';
     form.querySelector('#f_limite').value='';
     temOpcoesChk.checked = false; opcoesWrap.style.display='none';
     temVersoesChk.checked = false;
@@ -1801,8 +1879,8 @@ function renderCardapio(c){
       .map(v=>({nome:v.nome.trim(), preco:Number(v.preco), limite:(v.limite===null||v.limite===undefined||isNaN(v.limite))?null:Number(v.limite)})) : [];
     if(!item){ alert('Preencha o nome do item.'); return; }
     if(temVersoes && versoes.length===0){ alert('Adicione pelo menos uma versão com nome e preço, ou desmarque a opção de versões.'); return; }
-    const preco = temVersoes ? versoes[0].preco : parseFloat(form.querySelector('#f_preco').value);
-    if(!temVersoes && isNaN(preco)){ alert('Preencha nome do item e preço.'); return; }
+    const preco = temVersoes ? versoes[0].preco : moneyVal(precoInput);
+    if(!temVersoes && (isNaN(preco) || preco<=0)){ alert('Preencha nome do item e preço.'); return; }
     const ativo = form.querySelector('#f_ativo').value==='true';
     const limiteRaw = form.querySelector('#f_limite').value;
     const limite = temVersoes ? null : (limiteRaw.trim()==='' ? null : parseInt(limiteRaw,10));
@@ -1879,7 +1957,7 @@ function renderCardapio(c){
       form.querySelector('#f_item').value = i.item;
       form.querySelector('#f_cat').innerHTML = categoriaOptionsHtml(DB.categoriasCardapio, i.categoria||'');
       form.querySelector('#f_cat').value = i.categoria||'';
-      form.querySelector('#f_preco').value = i.preco;
+      setMoneyVal(precoInput, i.preco);
       form.querySelector('#f_ativo').value = i.ativo ? 'true' : 'false';
       form.querySelector('#f_limite').value = (i.limite===null || i.limite===undefined) ? '' : i.limite;
       cardFormState.faixas = normalizarPacotes(i.faixasPreco);
@@ -1962,7 +2040,7 @@ function renderReservas(c){
             <option value="desconto">➖ Desconto</option>
             <option value="acrescimo">➕ Acréscimo</option>
           </select></div>
-          <div><label>Valor do Ajuste</label><input type="number" step="0.01" min="0" value="0" id="f_ajusteValor" placeholder="Ex: 2"></div>
+          <div><label>Valor do Ajuste</label><input type="text" id="f_ajusteValor" placeholder="R$ 0,00"></div>
         </div>
         <div class="small-note" style="margin-top:-10px; margin-bottom:12px;">Escolha se é desconto ou acréscimo e digite o valor sempre <strong>positivo</strong> (ex: 2) — o sistema aplica o sinal certo sozinho, então funciona igual no computador, no celular ou no tablet, sem precisar digitar "-" ou "+". Deixe "Sem ajuste" se o preço do cardápio/pacote já está correto — use isso pra casos pontuais, como um ingrediente extra ou uma queima de estoque.</div>
         <div style="margin-bottom:12px;"><label>Motivo do ajuste (opcional)</label><input type="text" id="f_ajusteMotivo" placeholder="Ex: carne extra no hambúrguer, últimas unidades..."></div>
@@ -1980,7 +2058,7 @@ function renderReservas(c){
           <div><label>Forma de Pagamento</label><select id="f_pagto"><option>Dinheiro</option><option>Pix</option><option>Cartão</option></select></div>
           <div><label>Conta (opcional)</label><select id="f_contaReserva">${contaOptionsHtml(DB.contasCaixa)}</select></div>
           <div><label>Pago?</label><select id="f_pago"><option>Não</option><option>Parcial</option><option>Sim</option></select></div>
-          <div id="f_valorPagoWrap" style="display:none;"><label>Valor já pago (R$)</label><input type="number" step="0.01" min="0" id="f_valorPago" placeholder="Ex: 20"></div>
+          <div id="f_valorPagoWrap" style="display:none;"><label>Valor já pago (R$)</label><input type="text" id="f_valorPago" placeholder="R$ 0,00"></div>
           <div><label>Entregue?</label><select id="f_entregue"><option>Não</option><option>Sim</option></select></div>
         </div>
         <div class="small-note" id="pagtoModoNota" style="margin-top:-10px; margin-bottom:12px;">Aplicado a todos os itens deste pedido ao finalizar. Depois de lançado, cada item vira um cartão próprio em "Pedidos Lançados" e pode ser marcado (ou ter o pagamento parcial ajustado) individualmente. Pagamento parcial na hora de finalizar só funciona com 1 item no pedido — com mais de um, finalize como "Não" ou "Sim" e ajuste o valor pago depois, item por item.</div>
@@ -2010,9 +2088,10 @@ function renderReservas(c){
     const ajusteTipoSel = form.querySelector('#f_ajusteTipo');
     const ajusteDirecaoSel = form.querySelector('#f_ajusteDirecao');
     const ajusteValorInput = form.querySelector('#f_ajusteValor');
+    attachMoneyMask(ajusteValorInput); setMoneyVal(ajusteValorInput, 0);
     const ajusteMotivoInput = form.querySelector('#f_ajusteMotivo');
     function ajusteValorComSinal(){
-      const magnitude = Math.abs(parseFloat(ajusteValorInput.value)) || 0;
+      const magnitude = Math.abs(moneyVal(ajusteValorInput));
       return ajusteDirecaoSel.value==='desconto' ? -magnitude : magnitude;
     }
     function tentarAutoPreencherTelefone(){
@@ -2026,6 +2105,7 @@ function renderReservas(c){
     const pagoSel = form.querySelector('#f_pago');
     const valorPagoWrap = form.querySelector('#f_valorPagoWrap');
     const valorPagoInput = form.querySelector('#f_valorPago');
+    attachMoneyMask(valorPagoInput); setMoneyVal(valorPagoInput, 0);
     function atualizarVisibilidadePago(){
       valorPagoWrap.style.display = pagoSel.value==='Parcial' ? 'block' : 'none';
     }
@@ -2175,7 +2255,7 @@ function renderReservas(c){
     function limparCamposItem(){
       itemSel.selectedIndex = 0;
       qtdInput.value = '1';
-      ajusteTipoSel.value = 'nenhum'; ajusteDirecaoSel.value = 'desconto'; ajusteValorInput.value = '0'; ajusteMotivoInput.value = '';
+      ajusteTipoSel.value = 'nenhum'; ajusteDirecaoSel.value = 'desconto'; setMoneyVal(ajusteValorInput, 0); ajusteMotivoInput.value = '';
       obsInput.value = '';
       refreshVersaoOptions();
       refreshOpcoesItem();
@@ -2250,7 +2330,7 @@ function renderReservas(c){
       clienteInput.value = ''; telefoneInput.value = '';
       carrinho = [];
       limparCamposItem();
-      pagtoSel.value='Dinheiro'; contaReservaSel.value=''; pagoSel.value='Não'; valorPagoInput.value='0'; atualizarVisibilidadePago(); entregueSel.value='Não';
+      pagtoSel.value='Dinheiro'; contaReservaSel.value=''; pagoSel.value='Não'; setMoneyVal(valorPagoInput, 0); atualizarVisibilidadePago(); entregueSel.value='Não';
       editingReservaId = null;
       formTitle.textContent = 'Nova Reserva / Pedido';
       renderCarrinho();
@@ -2288,13 +2368,13 @@ function renderReservas(c){
       ajusteTipoSel.value = r.ajusteTipo || 'nenhum';
       const ajusteValorExistente = (r.ajusteValor!==undefined && r.ajusteValor!==null) ? Number(r.ajusteValor) : 0;
       ajusteDirecaoSel.value = ajusteValorExistente < 0 ? 'desconto' : 'acrescimo';
-      ajusteValorInput.value = Math.abs(ajusteValorExistente);
+      setMoneyVal(ajusteValorInput, Math.abs(ajusteValorExistente));
       ajusteMotivoInput.value = r.ajusteMotivo || '';
       pagtoSel.value = r.formaPagamento || 'Dinheiro';
       contaReservaSel.innerHTML = contaOptionsHtml(DB.contasCaixa, r.conta||'');
       contaReservaSel.value = r.conta || '';
       pagoSel.value = statusPagamento(valorPagoDe(r), valorReserva(r));
-      valorPagoInput.value = valorPagoDe(r);
+      setMoneyVal(valorPagoInput, valorPagoDe(r));
       atualizarVisibilidadePago();
       entregueSel.value = r.entregue || 'Não';
       obsInput.value = r.observacao || '';
@@ -2424,8 +2504,7 @@ function renderReservas(c){
         let valorPago;
         if(pagoSel.value==='Sim') valorPago = valorTotal;
         else if(pagoSel.value==='Parcial'){
-          const digitado = parseFloat(valorPagoInput.value);
-          if(isNaN(digitado) || digitado<0){ alert('Informe um valor pago válido para o pagamento parcial.'); return; }
+          const digitado = moneyVal(valorPagoInput);
           valorPago = Math.min(digitado, valorTotal);
         }
         else valorPago = 0;
@@ -2465,8 +2544,7 @@ function renderReservas(c){
       }
       let valorPagoDigitadoCarrinho = 0;
       if(pagoSel.value==='Parcial'){
-        valorPagoDigitadoCarrinho = parseFloat(valorPagoInput.value);
-        if(isNaN(valorPagoDigitadoCarrinho) || valorPagoDigitadoCarrinho<0){ alert('Informe um valor pago válido para o pagamento parcial.'); return; }
+        valorPagoDigitadoCarrinho = moneyVal(valorPagoInput);
       }
 
       // revalida no Firestore o limite de produção de cada combinação item+versão única do carrinho
@@ -2620,7 +2698,7 @@ function renderReservas(c){
         <button type="button" class="pill-toggle ${r.montada==='Sim'?'on':''}" ${perm.editar?`data-montada="${r.id}"`:'disabled'}>${r.montada==='Sim'?'✓ Montada':'Montada: Não'}</button>
       </div>
       <div class="parcial-wrap" data-parcialwrap="${r.id}" style="display:none; gap:8px; align-items:center; margin:-4px 0 10px;">
-        <input type="number" step="0.01" min="0" max="${totalR}" value="${vPago}" data-parcialinput="${r.id}" style="width:100px;">
+        <input type="text" value="${moneyDisplayFromValor(vPago)}" data-parcialinput="${r.id}" style="width:100px;">
         <span class="small-note" style="margin:0;">de ${fmtMoney(totalR)}</span>
         <button type="button" class="btn small" data-salvarparcial="${r.id}">Salvar</button>
       </div>
@@ -2695,6 +2773,7 @@ function renderReservas(c){
     await col('reservas').doc(r.id).update({pago:novoPago, valorPago:novoValorPago, dataPagamento});
     await auditLog('Atualizou', 'reservas', `Pagamento de ${r.cliente} (${r.item}): ${r.pago} → ${novoPago}${novoPago==='Sim'?` (recebido em ${fmtDateBR(dataPagamento)})`:''}`);
   }));
+  tableWrap.querySelectorAll('[data-parcialinput]').forEach(input=>attachMoneyMask(input));
   tableWrap.querySelectorAll('[data-parcial]').forEach(btn=>btn.addEventListener('click', ()=>{
     const wrap = tableWrap.querySelector(`[data-parcialwrap="${btn.dataset.parcial}"]`);
     if(wrap) wrap.style.display = wrap.style.display==='none' ? 'flex' : 'none';
@@ -2702,8 +2781,7 @@ function renderReservas(c){
   tableWrap.querySelectorAll('[data-salvarparcial]').forEach(btn=>btn.addEventListener('click', async ()=>{
     const r = DB.reservas.find(x=>x.id===btn.dataset.salvarparcial);
     const input = tableWrap.querySelector(`[data-parcialinput="${btn.dataset.salvarparcial}"]`);
-    const digitado = parseFloat(input.value);
-    if(isNaN(digitado) || digitado<0){ alert('Informe um valor de pagamento válido.'); return; }
+    const digitado = moneyVal(input);
     const total = valorReserva(r);
     const valorPagoAntigo = valorPagoDe(r);
     const valorPago = Math.min(digitado, total);
@@ -2774,8 +2852,8 @@ function renderDespesas(c){
         <div><label>Quantidade</label><input type="number" step="0.01" min="0" id="f_qtd" placeholder="Ex: 5"></div>
         <div><label>Unidade</label><select id="f_unidade">${UNIDADES_PADRAO.map(u=>`<option value="${u}">${u}</option>`).join('')}<option value="__outra">Outra (digitar)...</option></select></div>
         <div id="f_unidadeOutraWrap" style="display:none;"><label>Qual unidade?</label><input type="text" id="f_unidadeOutra" placeholder="Ex: bandeja"></div>
-        <div><label>Preço Unitário (R$, opcional)</label><input type="number" step="0.01" min="0" id="f_precoUnit" placeholder="Ex: 3,50"></div>
-        <div><label>Valor Total (R$)</label><input type="number" step="0.01" id="f_valor"></div>
+        <div><label>Preço Unitário (R$, opcional)</label><input type="text" id="f_precoUnit" placeholder="R$ 0,00"></div>
+        <div><label>Valor Total (R$)</label><input type="text" id="f_valor" placeholder="R$ 0,00"></div>
         <div><label>Conta (opcional)</label><select id="f_contaDespesa">${contaOptionsHtml(DB.contasCaixa)}</select></div>
       </div>
       <div class="small-note" style="margin-top:-10px; margin-bottom:12px;">Use "Sem evento" pra saídas que não são de uma cantina específica (ex: uma conta geral do ministério). Preenchendo Quantidade e Preço Unitário, o Valor Total é calculado sozinho (Qtd × Preço Unit.) — mas você ainda pode digitar o Valor Total direto, sem preço unitário, pra gastos sem uma unidade clara (ex: conta de luz).</div>
@@ -2797,6 +2875,7 @@ function renderDespesas(c){
     const unidadeOutraInput = form.querySelector('#f_unidadeOutra');
     const precoUnitInput = form.querySelector('#f_precoUnit');
     const valorInput = form.querySelector('#f_valor');
+    attachMoneyMask(precoUnitInput); attachMoneyMask(valorInput);
     const contaSel = form.querySelector('#f_contaDespesa');
     const btnAdd = form.querySelector('#btnAdd');
     const btnCancelEditDespesa = form.querySelector('#btnCancelEditDespesa');
@@ -2813,9 +2892,9 @@ function renderDespesas(c){
 
     function recalcularValorAutomatico(){
       const qtd = parseFloat(qtdInput.value);
-      const precoUnit = parseFloat(precoUnitInput.value);
-      if(!isNaN(qtd) && qtd>0 && !isNaN(precoUnit) && precoUnit>=0){
-        valorInput.value = Math.round(qtd*precoUnit*100)/100;
+      const precoUnit = moneyVal(precoUnitInput);
+      if(!isNaN(qtd) && qtd>0 && precoUnitInput.value.trim()!=='' && precoUnit>=0){
+        setMoneyVal(valorInput, Math.round(qtd*precoUnit*100)/100);
       }
     }
     qtdInput.addEventListener('input', recalcularValorAutomatico);
@@ -2824,7 +2903,7 @@ function renderDespesas(c){
     function limparFormDespesa(){
       evSel.value = opts.length ? opts[0].value : SEM_EVENTO; atualizarVisibilidadeEvento();
       dataAvulsaInput.value = hojeStr();
-      descInput.value=''; catSel.value=''; qtdInput.value=''; precoUnitInput.value=''; valorInput.value=''; contaSel.value='';
+      descInput.value=''; catSel.value=''; qtdInput.value=''; clearMoneyVal(precoUnitInput); clearMoneyVal(valorInput); contaSel.value='';
       unidadeSel.value = UNIDADES_PADRAO[0]; unidadeOutraWrap.style.display='none'; unidadeOutraInput.value='';
       editingDespesaId = null;
       formTitle.textContent = 'Nova Despesa';
@@ -2850,8 +2929,8 @@ function renderDespesas(c){
       } else {
         unidadeSel.value = d.unidade || UNIDADES_PADRAO[0]; unidadeOutraWrap.style.display='none';
       }
-      precoUnitInput.value = (d.precoUnitario===null||d.precoUnitario===undefined) ? '' : d.precoUnitario;
-      valorInput.value = d.valor;
+      if(d.precoUnitario===null||d.precoUnitario===undefined){ clearMoneyVal(precoUnitInput); } else { setMoneyVal(precoUnitInput, d.precoUnitario); }
+      setMoneyVal(valorInput, d.valor);
       contaSel.innerHTML = contaOptionsHtml(DB.contasCaixa, d.conta||'');
       contaSel.value = d.conta || '';
       formTitle.textContent = `Editar Despesa — ${d.descricao}`;
@@ -2866,14 +2945,13 @@ function renderDespesas(c){
       const sel = semEvento ? null : opts.find(o=>o.value===evSel.value);
       const descricao = descInput.value.trim();
       const categoria = catSel.value;
-      const valor = parseFloat(valorInput.value);
+      const valor = moneyVal(valorInput);
       const quantidadeRaw = qtdInput.value.trim();
       const quantidade = quantidadeRaw==='' ? null : parseFloat(quantidadeRaw);
       const unidade = unidadeSel.value==='__outra' ? unidadeOutraInput.value.trim() : unidadeSel.value;
-      const precoUnitRaw = precoUnitInput.value.trim();
-      const precoUnitario = precoUnitRaw==='' ? null : parseFloat(precoUnitRaw);
+      const precoUnitario = precoUnitInput.value.trim()==='' ? null : moneyVal(precoUnitInput);
       const conta = contaSel.value || null;
-      if(!descricao || isNaN(valor)){ alert('Preencha descrição e valor.'); return; }
+      if(!descricao || !(valor>0)){ alert('Preencha descrição e valor.'); return; }
       if(semEvento && !dataAvulsaInput.value){ alert('Preencha a data desta saída.'); return; }
       if(!semEvento && !sel){ alert('Selecione um evento (ou "Sem evento").'); return; }
 
@@ -3060,24 +3138,26 @@ function renderCaixa(c){
         <div><label>Data</label><input type="date" id="f_dataEntrada" value="${hojeStr()}"></div>
         <div><label>Descrição</label><input type="text" id="f_descEntrada" placeholder="Ex: Doação da Família Silva"></div>
         <div><label>Categoria (opcional)</label><input type="text" id="f_catEntrada" placeholder="Ex: Doação"></div>
-        <div><label>Valor (R$)</label><input type="number" step="0.01" id="f_valorEntrada"></div>
+        <div><label>Valor (R$)</label><input type="text" id="f_valorEntrada" placeholder="R$ 0,00"></div>
         <div><label>Conta (opcional)</label><select id="f_contaEntrada">${contaOptionsHtml(DB.contasCaixa)}</select></div>
       </div>
       <button class="btn" id="btnAddEntrada">+ Adicionar Entrada</button>
     </div>`);
     c.appendChild(form);
+    const valorEntradaInput = form.querySelector('#f_valorEntrada');
+    attachMoneyMask(valorEntradaInput);
     form.addEventListener('input', ()=>{ telaSuja = true; });
     form.addEventListener('change', ()=>{ telaSuja = true; });
     form.querySelector('#btnAddEntrada').addEventListener('click', async ()=>{
       const data = form.querySelector('#f_dataEntrada').value;
       const descricao = form.querySelector('#f_descEntrada').value.trim();
       const categoria = form.querySelector('#f_catEntrada').value.trim();
-      const valor = parseFloat(form.querySelector('#f_valorEntrada').value);
+      const valor = moneyVal(valorEntradaInput);
       const conta = form.querySelector('#f_contaEntrada').value || null;
-      if(!data || !descricao || isNaN(valor)){ alert('Preencha data, descrição e valor.'); return; }
+      if(!data || !descricao || !(valor>0)){ alert('Preencha data, descrição e valor.'); return; }
       await col('entradasAvulsas').add({ data, descricao, categoria, valor, conta, lancadoPor: userName() });
       await auditLog('Criou', 'entradasAvulsas', `Entrada avulsa "${descricao}" (${fmtMoney(valor)}) em ${fmtDateBR(data)}`);
-      form.querySelector('#f_descEntrada').value=''; form.querySelector('#f_catEntrada').value=''; form.querySelector('#f_valorEntrada').value=''; form.querySelector('#f_contaEntrada').value='';
+      form.querySelector('#f_descEntrada').value=''; form.querySelector('#f_catEntrada').value=''; clearMoneyVal(valorEntradaInput); form.querySelector('#f_contaEntrada').value='';
       telaSuja = false;
       render();
     });
